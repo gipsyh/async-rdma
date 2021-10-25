@@ -4,7 +4,7 @@ use rdma_sys::{
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
     ibv_send_wr, ibv_sge, ibv_wr_opcode,
 };
-use std::{fmt::Debug, io, ptr};
+use std::{fmt::Debug, io, ptr, sync::Arc};
 
 struct QueuePairInitAttr {
     qp_init_attr_inner: rdma_sys::ibv_qp_init_attr,
@@ -51,16 +51,16 @@ impl Debug for QueuePairInitAttr {
     }
 }
 
-pub struct QueuePairBuilder<'a> {
-    pub pd: &'a ProtectionDomain<'a>,
-    cq: Option<&'a CompletionQueue<'a>>,
+pub struct QueuePairBuilder {
+    pub pd: Arc<ProtectionDomain>,
+    cq: Option<Arc<CompletionQueue>>,
     qp_init_attr: QueuePairInitAttr,
 }
 
-impl<'a> QueuePairBuilder<'a> {
-    pub fn new(pd: &'a ProtectionDomain) -> Self {
+impl QueuePairBuilder {
+    pub fn new(pd: &Arc<ProtectionDomain>) -> Self {
         Self {
-            pd,
+            pd: pd.clone(),
             cq: None,
             qp_init_attr: QueuePairInitAttr::default(),
         }
@@ -77,14 +77,14 @@ impl<'a> QueuePairBuilder<'a> {
             return Err(io::Error::last_os_error());
         }
         Ok(QueuePair {
+            pd: self.pd.clone(),
+            cq: self.cq.as_ref().unwrap().clone(),
             inner_qp,
-            cq: self.cq.unwrap(),
-            pd: self.pd,
         })
     }
 
-    pub fn set_cq(&mut self, cq: &'a CompletionQueue) -> &mut Self {
-        self.cq = Some(cq);
+    pub fn set_cq(&mut self, cq: &Arc<CompletionQueue>) -> &mut Self {
+        self.cq = Some(cq.clone());
         self.qp_init_attr.qp_init_attr_inner.send_cq = cq.inner_cq;
         self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.inner_cq;
         self
@@ -105,14 +105,14 @@ pub struct QueuePairEndpoint {
     gid: Gid,
 }
 
-pub struct QueuePair<'a> {
-    pd: &'a ProtectionDomain<'a>,
-    cq: &'a CompletionQueue<'a>,
+pub struct QueuePair {
+    pd: Arc<ProtectionDomain>,
+    cq: Arc<CompletionQueue>,
     // state: QueuePairState,
     inner_qp: *mut rdma_sys::ibv_qp,
 }
 
-impl QueuePair<'_> {
+impl QueuePair {
     pub fn endpoint(&self) -> QueuePairEndpoint {
         QueuePairEndpoint {
             qp_num: unsafe { (*self.inner_qp).qp_num },
@@ -223,7 +223,7 @@ impl QueuePair<'_> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
-        let data: RdmaLocalBox<T> = RdmaLocalBox::new_with_zerod(self.pd);
+        let data: RdmaLocalBox<T> = RdmaLocalBox::new_with_zerod(&self.pd);
         sge.addr = data.ptr() as u64;
         sge.length = data.len() as u32;
         sge.lkey = data.lkey();
@@ -265,7 +265,7 @@ impl QueuePair<'_> {
     }
 }
 
-impl<'a> Drop for QueuePair<'a> {
+impl Drop for QueuePair {
     fn drop(&mut self) {
         let errno = unsafe { ibv_destroy_qp(self.inner_qp) };
         assert_eq!(errno, 0);

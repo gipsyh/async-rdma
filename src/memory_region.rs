@@ -3,16 +3,17 @@ use rdma_sys::ibv_access_flags;
 use std::{
     alloc::{Allocator, Global, Layout},
     io,
+    sync::Arc,
 };
 
-pub struct MemoryRegion<'pd> {
-    _pd: &'pd ProtectionDomain<'pd>,
+pub struct MemoryRegion {
+    _pd: Arc<ProtectionDomain>,
     pub(super) inner_mr: *mut rdma_sys::ibv_mr,
 }
 
-impl<'pd> MemoryRegion<'pd> {
+impl MemoryRegion {
     pub fn create(
-        pd: &'pd ProtectionDomain,
+        pd: &Arc<ProtectionDomain>,
         layout: Layout,
         access: ibv_access_flags,
     ) -> io::Result<Self> {
@@ -28,7 +29,10 @@ impl<'pd> MemoryRegion<'pd> {
         if inner_mr.is_null() {
             return Err(io::Error::last_os_error());
         }
-        Ok(MemoryRegion { _pd: pd, inner_mr })
+        Ok(MemoryRegion {
+            _pd: pd.clone(),
+            inner_mr,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -44,7 +48,7 @@ impl<'pd> MemoryRegion<'pd> {
     }
 }
 
-impl Drop for MemoryRegion<'_> {
+impl Drop for MemoryRegion {
     fn drop(&mut self) {
         let rc = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr) };
         assert_eq!(rc, 0);

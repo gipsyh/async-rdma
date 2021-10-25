@@ -1,6 +1,6 @@
 use crate::*;
 use rdma_sys::ibv_get_device_name;
-use std::{ffi::CStr, io};
+use std::{ffi::CStr, io, sync::Arc};
 
 pub struct Context {
     pub(super) inner_ctx: *mut rdma_sys::ibv_context,
@@ -51,26 +51,26 @@ impl Context {
         })
     }
 
-    pub fn create_event_channel(&self) -> io::Result<EventChannel> {
+    pub fn create_event_channel(self: &Arc<Self>) -> io::Result<EventChannel> {
         let inner_ec = unsafe { rdma_sys::ibv_create_comp_channel(self.inner_ctx) };
         if inner_ec.is_null() {
             return Err(io::Error::last_os_error());
         }
         Ok(EventChannel {
-            ctx: self,
+            ctx: self.clone(),
             inner_ec,
         })
     }
 
-    pub fn create_completion_queue<'a>(
-        &'a self,
+    pub fn create_completion_queue(
+        &self,
         cq_size: u32,
-        event_channel: Option<&'a EventChannel>,
+        event_channel: Option<&Arc<EventChannel>>,
     ) -> io::Result<CompletionQueue> {
         CompletionQueue::create(self, cq_size, event_channel)
     }
 
-    pub fn create_protection_domain(&self) -> io::Result<ProtectionDomain> {
+    pub fn create_protection_domain(self: &Arc<Self>) -> io::Result<ProtectionDomain> {
         ProtectionDomain::create(self)
     }
 

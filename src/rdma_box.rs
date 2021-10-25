@@ -1,15 +1,15 @@
 use crate::*;
 use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
-use std::{alloc::Layout, marker::PhantomData, ops::Deref, ptr::NonNull};
+use std::{alloc::Layout, marker::PhantomData, ops::Deref, ptr::NonNull, sync::Arc};
 
-pub struct RdmaLocalBox<'mr, T> {
-    mr: MemoryRegion<'mr>,
+pub struct RdmaLocalBox<T> {
+    mr: MemoryRegion,
     data: NonNull<T>,
 }
 
-impl<'pd, T> RdmaLocalBox<'pd, T> {
-    pub fn new(pd: &'pd ProtectionDomain, x: T) -> Self {
+impl<T> RdmaLocalBox<T> {
+    pub fn new(pd: &Arc<ProtectionDomain>, x: T) -> Self {
         let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_READ
@@ -21,7 +21,7 @@ impl<'pd, T> RdmaLocalBox<'pd, T> {
         RdmaLocalBox { mr, data }
     }
 
-    pub fn new_with_zerod(pd: &'pd ProtectionDomain) -> Self {
+    pub fn new_with_zerod(pd: &Arc<ProtectionDomain>) -> Self {
         let x = unsafe { std::mem::zeroed::<T>() };
         Self::new(pd, x)
     }
@@ -38,7 +38,7 @@ impl<'pd, T> RdmaLocalBox<'pd, T> {
         self.mr.lkey()
     }
 
-    pub fn remote_box(&'pd self) -> RdmaRemoteBox<'pd> {
+    pub fn remote_box(&self) -> RdmaRemoteBox {
         RdmaRemoteBox {
             _phantom: PhantomData,
             ptr: self.ptr() as _,
@@ -48,7 +48,7 @@ impl<'pd, T> RdmaLocalBox<'pd, T> {
     }
 }
 
-impl<T> Deref for RdmaLocalBox<'_, T> {
+impl<T> Deref for RdmaLocalBox<T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { self.data.as_ref() }
