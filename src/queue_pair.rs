@@ -4,7 +4,7 @@ use rdma_sys::{
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
     ibv_send_wr, ibv_sge, ibv_wr_opcode,
 };
-use std::{fmt::Debug, ptr};
+use std::{fmt::Debug, io, ptr};
 
 struct QueuePairInitAttr {
     qp_init_attr_inner: rdma_sys::ibv_qp_init_attr,
@@ -64,18 +64,20 @@ impl<'a> QueuePairBuilder<'a> {
         }
     }
 
-    pub fn build(&mut self) -> QueuePair {
+    pub fn build(&mut self) -> io::Result<QueuePair> {
         let inner_qp = unsafe {
             rdma_sys::ibv_create_qp(
                 self.pd.inner_pd,
                 &mut self.qp_init_attr.qp_init_attr_inner as *mut _,
             )
         };
-        assert!(!inner_qp.is_null());
-        QueuePair {
+        if inner_qp.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(QueuePair {
             inner_qp,
             pd: self.pd,
-        }
+        })
     }
 
     pub fn set_send_cq(&mut self, cq: &'a CompletionQueue) -> &mut Self {
@@ -118,7 +120,7 @@ impl QueuePair<'_> {
         }
     }
 
-    pub fn modify_to_init(&self, flag: ibv_access_flags) {
+    pub fn modify_to_init(&self, flag: ibv_access_flags) -> io::Result<()> {
         let mut attr = unsafe { std::mem::zeroed::<ibv_qp_attr>() };
         attr.pkey_index = 0;
         attr.port_num = 1;
@@ -129,7 +131,10 @@ impl QueuePair<'_> {
             | ibv_qp_attr_mask::IBV_QP_PORT
             | ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
         let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
-        assert_eq!(errno, 0);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
     }
 
     pub fn modify_to_rtr(
@@ -138,7 +143,7 @@ impl QueuePair<'_> {
         start_psn: u32,
         max_dest_rd_atomic: u8,
         min_rnr_timer: u8,
-    ) {
+    ) -> io::Result<()> {
         let mut attr = unsafe { std::mem::zeroed::<ibv_qp_attr>() };
         attr.qp_state = ibv_qp_state::IBV_QPS_RTR;
         attr.path_mtu = self.pd.ctx.get_active_mtu();
@@ -161,7 +166,10 @@ impl QueuePair<'_> {
             | ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
             | ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
         let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
-        assert_eq!(errno, 0);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
     }
 
     pub fn modify_to_rts(
@@ -171,7 +179,7 @@ impl QueuePair<'_> {
         rnr_retry: u8,
         start_psn: u32,
         max_rd_atomic: u8,
-    ) {
+    ) -> io::Result<()> {
         let mut attr = unsafe { std::mem::zeroed::<ibv_qp_attr>() };
         attr.qp_state = ibv_qp_state::IBV_QPS_RTS;
         attr.timeout = timeout;
@@ -186,7 +194,10 @@ impl QueuePair<'_> {
             | ibv_qp_attr_mask::IBV_QP_SQ_PSN
             | ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
         let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
-        assert_eq!(errno, 0);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
     }
 
     pub fn post_send<T>(&self, data: RdmaLocalBox<T>) {
