@@ -13,7 +13,7 @@ pub fn test_server1() -> io::Result<()> {
     let cq = ctx.create_completion_queue(10, Some(&ec))?;
     let pd = ctx.create_protection_domain()?;
     let mut qpb = pd.create_queue_pair_builder();
-    let qp = qpb.set_recv_cq(&cq).set_send_cq(&cq).build()?;
+    let qp = qpb.set_cq(&cq).build()?;
     qp.modify_to_init(ibv_access)?;
     let local_ep = qp.endpoint();
     let listener = std::net::TcpListener::bind("127.0.0.1:8000")?;
@@ -39,7 +39,7 @@ pub fn test_client1() -> io::Result<()> {
     let cq = ctx.create_completion_queue(10, Some(&ec))?;
     let pd = ctx.create_protection_domain()?;
     let mut qpb = pd.create_queue_pair_builder();
-    let qp = qpb.set_recv_cq(&cq).set_send_cq(&cq).build()?;
+    let qp = qpb.set_cq(&cq).build()?;
     qp.modify_to_init(ibv_access)?;
     let local_ep = qp.endpoint();
     let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;
@@ -64,7 +64,7 @@ pub fn test_server2() -> io::Result<()> {
     let cq = ctx.create_completion_queue(10, Some(&ec))?;
     let pd = ctx.create_protection_domain()?;
     let mut qpb = pd.create_queue_pair_builder();
-    let qp = qpb.set_recv_cq(&cq).set_send_cq(&cq).build()?;
+    let qp = qpb.set_cq(&cq).build()?;
     qp.modify_to_init(ibv_access)?;
     let local_ep = qp.endpoint();
     let listener = std::net::TcpListener::bind("127.0.0.1:8000")?;
@@ -91,7 +91,7 @@ pub fn test_client2() -> io::Result<()> {
     let cq = ctx.create_completion_queue(10, Some(&ec))?;
     let pd = ctx.create_protection_domain()?;
     let mut qpb = pd.create_queue_pair_builder();
-    let qp = qpb.set_recv_cq(&cq).set_send_cq(&cq).build()?;
+    let qp = qpb.set_cq(&cq).build()?;
     qp.modify_to_init(ibv_access).unwrap();
     let local_ep = qp.endpoint();
     let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;

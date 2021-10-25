@@ -96,6 +96,21 @@ mod tests {
     use crate::*;
     #[test]
     fn test1() {
-        let ctx = Context::open(Some("rdma"));
+        let ctx = Context::open(Some("rdma")).unwrap();
+    }
+
+    #[test]
+    fn test2() {
+        let ctx = Context::open(Some("")).err().unwrap();
+    }
+
+    #[test]
+    fn test3() {
+        let ctx = Context::open(Some("rdma1")).err().unwrap();
+    }
+
+    #[test]
+    fn test4() {
+        let ctx = Context::open(None).unwrap();
     }
 }

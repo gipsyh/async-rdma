@@ -53,6 +53,7 @@ impl Debug for QueuePairInitAttr {
 
 pub struct QueuePairBuilder<'a> {
     pub pd: &'a ProtectionDomain<'a>,
+    cq: Option<&'a CompletionQueue<'a>>,
     qp_init_attr: QueuePairInitAttr,
 }
 
@@ -60,6 +61,7 @@ impl<'a> QueuePairBuilder<'a> {
     pub fn new(pd: &'a ProtectionDomain) -> Self {
         Self {
             pd,
+            cq: None,
             qp_init_attr: QueuePairInitAttr::default(),
         }
     }
@@ -76,16 +78,14 @@ impl<'a> QueuePairBuilder<'a> {
         }
         Ok(QueuePair {
             inner_qp,
+            cq: self.cq.unwrap(),
             pd: self.pd,
         })
     }
 
-    pub fn set_send_cq(&mut self, cq: &'a CompletionQueue) -> &mut Self {
+    pub fn set_cq(&mut self, cq: &'a CompletionQueue) -> &mut Self {
+        self.cq = Some(cq);
         self.qp_init_attr.qp_init_attr_inner.send_cq = cq.inner_cq;
-        self
-    }
-
-    pub fn set_recv_cq(&mut self, cq: &'a CompletionQueue) -> &mut Self {
         self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.inner_cq;
         self
     }
@@ -107,6 +107,7 @@ pub struct QueuePairEndpoint {
 
 pub struct QueuePair<'a> {
     pd: &'a ProtectionDomain<'a>,
+    cq: &'a CompletionQueue<'a>,
     // state: QueuePairState,
     inner_qp: *mut rdma_sys::ibv_qp,
 }
@@ -213,7 +214,7 @@ impl QueuePair<'_> {
         sr.num_sge = 1;
         sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
-        // cq.req_cq_notify(0);
+        self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
         assert_eq!(errno, 0);
     }
@@ -239,11 +240,9 @@ impl QueuePair<'_> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-
         sge.addr = local.ptr() as u64;
         sge.length = local.len() as u32;
         sge.lkey = local.lkey();
-
         sr.next = std::ptr::null_mut();
         sr.wr_id = 0;
         sr.sg_list = &mut sge;
@@ -252,8 +251,7 @@ impl QueuePair<'_> {
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
         sr.wr.rdma.remote_addr = remote.ptr as u64;
         sr.wr.rdma.rkey = remote.rkey;
-
-        // cq.req_cq_notify(0);
+        self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
         assert_eq!(errno, 0);
     }
