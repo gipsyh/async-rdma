@@ -201,7 +201,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_send<T>(&self, data: RdmaLocalBox<T>) {
+    pub fn post_send<T>(&self, data: &RdmaLocalBox<T>) {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -236,7 +236,7 @@ impl QueuePair {
         data
     }
 
-    fn remote_read_write<T>(&self, local: RdmaLocalBox<T>, remote: RdmaRemoteBox, opcode: u32) {
+    fn remote_read_write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox, opcode: u32) {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -256,11 +256,11 @@ impl QueuePair {
         assert_eq!(errno, 0);
     }
 
-    pub fn remote_read<T>(&self, local: RdmaLocalBox<T>, remote: RdmaRemoteBox) {
+    pub fn remote_read<T>(&self, local: &mut RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
         self.remote_read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ)
     }
 
-    pub fn remote_write<T>(&self, local: RdmaLocalBox<T>, remote: RdmaRemoteBox) {
+    pub fn remote_write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
         self.remote_read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE)
     }
 }
