@@ -10,6 +10,22 @@ pub struct MemoryRegion {
 }
 
 impl MemoryRegion {
+    pub fn new(pd: &Arc<ProtectionDomain>, layout: Layout) -> io::Result<Self> {
+        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        MemoryRegion::new_from_pd(pd, layout, access)
+    }
+
+    pub fn remote_mr(&self) -> RemoteMemoryRegion {
+        RemoteMemoryRegion {
+            addr: self.addr() as _,
+            len: self.length(),
+            rkey: self.rkey(),
+        }
+    }
+
     pub fn rkey(&self) -> u32 {
         unsafe { *self.inner_mr }.rkey
     }
