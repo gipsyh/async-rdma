@@ -64,3 +64,19 @@ pub struct RdmaRemoteBox {
     pub len: usize,
     pub rkey: u32,
 }
+
+impl RdmaMemory for RdmaRemoteBox {
+    fn addr(&self) -> *const u8 {
+        self.ptr as _
+    }
+
+    fn length(&self) -> usize {
+        self.len
+    }
+}
+
+impl RdmaRemoteMemory for RdmaRemoteBox {
+    fn rkey(&self) -> u32 {
+        self.rkey
+    }
+}

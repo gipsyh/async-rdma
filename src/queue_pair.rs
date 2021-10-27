@@ -236,7 +236,11 @@ impl QueuePair {
         data
     }
 
-    fn read_write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox, opcode: u32) {
+    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32)
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -249,18 +253,18 @@ impl QueuePair {
         sr.num_sge = 1;
         sr.opcode = opcode;
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
-        sr.wr.rdma.remote_addr = remote.ptr as u64;
-        sr.wr.rdma.rkey = remote.rkey;
+        sr.wr.rdma.remote_addr = remote.addr() as u64;
+        sr.wr.rdma.rkey = remote.rkey();
         self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
         assert_eq!(errno, 0);
     }
 
-    pub fn read<T>(&self, local: &mut RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
+    pub fn read<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &mut LM, remote: &RM) {
         self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ)
     }
 
-    pub fn write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
+    pub fn write<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &LM, remote: &RM) {
         self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE)
     }
 }
