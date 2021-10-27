@@ -21,6 +21,7 @@ impl ProtectionDomain {
     pub fn create_queue_pair_builder(self: &Arc<Self>) -> QueuePairBuilder {
         QueuePairBuilder::new(self)
     }
+
     pub fn alloc_memory_region(
         self: &Arc<Self>,
         layout: Layout,

@@ -201,7 +201,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_send<T>(&self, data: &RdmaLocalBox<T>) {
+    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -216,7 +216,10 @@ impl QueuePair {
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
         self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
-        assert_eq!(errno, 0);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
     }
 
     pub fn post_receive<T>(&self) -> RdmaLocalBox<T> {
@@ -236,7 +239,7 @@ impl QueuePair {
         data
     }
 
-    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32)
+    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
@@ -257,14 +260,25 @@ impl QueuePair {
         sr.wr.rdma.rkey = remote.rkey();
         self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
-        assert_eq!(errno, 0);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
     }
 
-    pub fn read<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &mut LM, remote: &RM) {
+    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
         self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ)
     }
 
-    pub fn write<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &LM, remote: &RM) {
+    pub fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
         self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE)
     }
 }

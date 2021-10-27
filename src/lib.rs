@@ -97,7 +97,7 @@ impl Rdma {
         Ok(())
     }
 
-    pub fn post_send<T>(&self, data: &RdmaLocalBox<T>) {
+    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
         self.qp.post_send(data)
     }
 
@@ -105,11 +105,19 @@ impl Rdma {
         self.qp.post_receive()
     }
 
-    pub fn write<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &LM, remote: &RM) {
+    pub fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
         self.qp.write(local, remote)
     }
 
-    pub fn read<LM: RdmaLocalMemory, RM: RdmaRemoteMemory>(&self, local: &mut LM, remote: &RM) {
+    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
         self.qp.read(local, remote)
     }
 }
