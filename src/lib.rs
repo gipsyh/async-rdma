@@ -105,11 +105,11 @@ impl Rdma {
         self.qp.post_receive()
     }
 
-    pub fn remote_write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
-        self.qp.remote_write(local, remote)
+    pub fn write<T>(&self, local: &RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
+        self.qp.write(local, remote)
     }
 
-    pub fn remote_read<T>(&self, local: &mut RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
-        self.qp.remote_read(local, remote)
+    pub fn read<T>(&self, local: &mut RdmaLocalBox<T>, remote: &RdmaRemoteBox) {
+        self.qp.read(local, remote)
     }
 }

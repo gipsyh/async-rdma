@@ -1,7 +1,7 @@
 use crate::*;
 use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
-use std::{alloc::Layout, marker::PhantomData, ops::Deref, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, ops::Deref, ptr::NonNull, sync::Arc};
 
 pub struct RdmaLocalBox<T> {
     mr: MemoryRegion,
@@ -40,7 +40,6 @@ impl<T> RdmaLocalBox<T> {
 
     pub fn remote_box(&self) -> RdmaRemoteBox {
         RdmaRemoteBox {
-            _phantom: PhantomData,
             ptr: self.ptr() as _,
             len: self.len(),
             rkey: self.mr.rkey(),
@@ -56,8 +55,7 @@ impl<T> Deref for RdmaLocalBox<T> {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct RdmaRemoteBox<'b> {
-    _phantom: PhantomData<&'b ()>,
+pub struct RdmaRemoteBox {
     pub ptr: usize,
     pub len: usize,
     pub rkey: u32,

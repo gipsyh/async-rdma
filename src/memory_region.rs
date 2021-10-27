@@ -1,13 +1,10 @@
 use crate::*;
 use rdma_sys::ibv_access_flags;
-use std::{
-    alloc::{Allocator, Global, Layout},
-    io,
-    sync::Arc,
-};
-
+use std::{alloc::Layout, io, sync::Arc};
+#[allow(unused)]
 pub struct MemoryRegion {
     _pd: Arc<ProtectionDomain>,
+    data: Vec<u8>,
     pub(super) inner_mr: *mut rdma_sys::ibv_mr,
 }
 
@@ -17,12 +14,12 @@ impl MemoryRegion {
         layout: Layout,
         access: ibv_access_flags,
     ) -> io::Result<Self> {
-        let ptr = Global.allocate(layout).unwrap();
+        let data = vec![0_u8; layout.size()];
         let inner_mr = unsafe {
             rdma_sys::ibv_reg_mr(
                 pd.inner_pd,
-                ptr.as_ptr() as *mut _,
-                ptr.len(),
+                data.as_ptr() as *mut _,
+                data.len(),
                 access.0 as i32,
             )
         };
@@ -31,6 +28,7 @@ impl MemoryRegion {
         }
         Ok(MemoryRegion {
             _pd: pd.clone(),
+            data,
             inner_mr,
         })
     }

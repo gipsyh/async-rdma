@@ -37,7 +37,7 @@ fn test_server2() -> io::Result<()> {
     let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
     let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
     assert!(remote_box.len == local_box.len());
-    rdma.qp.remote_write(&local_box, &remote_box);
+    rdma.qp.write(&local_box, &remote_box);
     Ok(())
 }
 
@@ -65,7 +65,7 @@ fn test_server3() -> io::Result<()> {
     let mut local_box = RdmaLocalBox::new(&rdma.pd, [0, 0, 0, 0]);
     let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
     assert!(remote_box.len == local_box.len());
-    rdma.remote_read(&mut local_box, &remote_box);
+    rdma.read(&mut local_box, &remote_box);
     dbg!(*local_box);
     Ok(())
 }
@@ -89,7 +89,7 @@ fn test_loopback() -> io::Result<()> {
     rdma.handshake(rdma.endpoint())?;
     let box1 = RdmaLocalBox::new(&rdma.pd, [0, 0, 0, 0]);
     let box2 = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
-    rdma.remote_write(&box2, &box1.remote_box());
+    rdma.write(&box2, &box1.remote_box());
     std::thread::sleep(std::time::Duration::from_secs(1));
     dbg!(*box1);
     Ok(())
