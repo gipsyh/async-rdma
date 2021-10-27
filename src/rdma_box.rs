@@ -26,24 +26,28 @@ impl<T> RdmaLocalBox<T> {
         Self::new(pd, x)
     }
 
-    pub fn ptr(&self) -> *mut T {
-        self.data.as_ptr()
-    }
-
-    pub fn len(&self) -> usize {
-        self.mr.len()
-    }
-
-    pub fn lkey(&self) -> u32 {
-        self.mr.lkey()
-    }
-
     pub fn remote_box(&self) -> RdmaRemoteBox {
         RdmaRemoteBox {
-            ptr: self.ptr() as _,
-            len: self.len(),
+            ptr: self.addr() as _,
+            len: self.length(),
             rkey: self.mr.rkey(),
         }
+    }
+}
+
+impl<T> RdmaMemory for RdmaLocalBox<T> {
+    fn addr(&self) -> *const u8 {
+        self.data.as_ptr() as *const u8
+    }
+
+    fn length(&self) -> usize {
+        self.mr.length()
+    }
+}
+
+impl<T> RdmaLocalMemory for RdmaLocalBox<T> {
+    fn lkey(&self) -> u32 {
+        self.mr.lkey()
     }
 }
 
@@ -54,20 +58,9 @@ impl<T> Deref for RdmaLocalBox<T> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RdmaRemoteBox {
     pub ptr: usize,
     pub len: usize,
     pub rkey: u32,
 }
-
-// enum RdmaBoxType<'a, T> {
-//     Local(RdmaLocalBox<'a, T>),
-//     Remote(RdmaRemoteBox<'a>),
-// }
-
-// struct RdmaBox<'a, T> {
-//     default_qp: Option<&'a QueuePair<'a>>,
-//     box_type: RdmaBoxType<'a, T>,
-
-// }

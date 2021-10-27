@@ -205,8 +205,8 @@ impl QueuePair {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = data.ptr() as u64;
-        sge.length = data.len() as u32;
+        sge.addr = data.addr() as u64;
+        sge.length = data.length() as u32;
         sge.lkey = data.lkey();
         sr.next = std::ptr::null_mut();
         sr.wr_id = 0;
@@ -224,8 +224,8 @@ impl QueuePair {
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
         let data: RdmaLocalBox<T> = RdmaLocalBox::new_with_zerod(&self.pd);
-        sge.addr = data.ptr() as u64;
-        sge.length = data.len() as u32;
+        sge.addr = data.addr() as u64;
+        sge.length = data.length() as u32;
         sge.lkey = data.lkey();
         rr.next = std::ptr::null_mut();
         rr.wr_id = 0;
@@ -240,8 +240,8 @@ impl QueuePair {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = local.ptr() as u64;
-        sge.length = local.len() as u32;
+        sge.addr = local.addr() as u64;
+        sge.length = local.length() as u32;
         sge.lkey = local.lkey();
         sr.next = std::ptr::null_mut();
         sr.wr_id = 0;

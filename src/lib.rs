@@ -113,3 +113,16 @@ impl Rdma {
         self.qp.read(local, remote)
     }
 }
+
+pub trait RdmaMemory {
+    fn addr(&self) -> *const u8;
+    fn length(&self) -> usize;
+}
+
+pub trait RdmaLocalMemory: RdmaMemory {
+    fn lkey(&self) -> u32;
+}
+
+pub trait RdmaRemoteMemory: RdmaMemory {
+    fn rkey(&self) -> u32;
+}

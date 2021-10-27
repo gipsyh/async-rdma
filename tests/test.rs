@@ -36,7 +36,6 @@ fn test_server2() -> io::Result<()> {
     rdma.handshake(remote)?;
     let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
     let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
-    assert!(remote_box.len == local_box.len());
     rdma.qp.write(&local_box, &remote_box);
     Ok(())
 }
@@ -64,7 +63,6 @@ fn test_server3() -> io::Result<()> {
     rdma.handshake(remote)?;
     let mut local_box = RdmaLocalBox::new(&rdma.pd, [0, 0, 0, 0]);
     let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
-    assert!(remote_box.len == local_box.len());
     rdma.read(&mut local_box, &remote_box);
     dbg!(*local_box);
     Ok(())

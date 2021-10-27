@@ -1,5 +1,6 @@
 use crate::*;
 use rdma_sys::ibv_access_flags;
+use serde::{Deserialize, Serialize};
 use std::{alloc::Layout, io, sync::Arc};
 #[allow(unused)]
 pub struct MemoryRegion {
@@ -33,16 +34,24 @@ impl MemoryRegion {
         })
     }
 
-    pub fn len(&self) -> usize {
-        unsafe { *self.inner_mr }.length
-    }
-
-    pub fn lkey(&self) -> u32 {
-        unsafe { *self.inner_mr }.lkey
-    }
-
     pub fn rkey(&self) -> u32 {
         unsafe { *self.inner_mr }.rkey
+    }
+}
+
+impl RdmaMemory for MemoryRegion {
+    fn addr(&self) -> *const u8 {
+        self.data.as_ptr()
+    }
+
+    fn length(&self) -> usize {
+        self.data.len()
+    }
+}
+
+impl RdmaLocalMemory for MemoryRegion {
+    fn lkey(&self) -> u32 {
+        unsafe { *self.inner_mr }.lkey
     }
 }
 
@@ -50,5 +59,28 @@ impl Drop for MemoryRegion {
     fn drop(&mut self) {
         let rc = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr) };
         assert_eq!(rc, 0);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RemoteMemoryRegion {
+    pub addr: usize,
+    pub len: usize,
+    pub rkey: u32,
+}
+
+impl RdmaMemory for RemoteMemoryRegion {
+    fn addr(&self) -> *const u8 {
+        self.addr as *const u8
+    }
+
+    fn length(&self) -> usize {
+        self.len
+    }
+}
+
+impl RdmaRemoteMemory for RemoteMemoryRegion {
+    fn rkey(&self) -> u32 {
+        self.rkey
     }
 }
