@@ -222,11 +222,15 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_receive<T>(&self) -> RdmaLocalBox<T> {
+    pub fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
-        let data: RdmaLocalBox<T> = RdmaLocalBox::new_with_zerod(&self.pd);
+        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        let data = LM::new_from_pd(&self.pd, LM::layout(), access)?;
         sge.addr = data.addr() as u64;
         sge.length = data.length() as u32;
         sge.lkey = data.lkey();
@@ -235,8 +239,10 @@ impl QueuePair {
         rr.sg_list = &mut sge;
         rr.num_sge = 1;
         let errno = unsafe { ibv_post_recv(self.inner_qp, &mut rr, &mut bad_wr) };
-        assert_eq!(errno, 0);
-        data
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(data)
     }
 
     fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32) -> io::Result<()>

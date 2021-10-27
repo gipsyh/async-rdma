@@ -65,6 +65,12 @@ impl<T> RdmaLocalMemory for RdmaLocalBox<T> {
     }
 }
 
+impl<T> SizedLayout for RdmaLocalBox<T> {
+    fn layout() -> Layout {
+        Layout::new::<T>()
+    }
+}
+
 impl<T> Deref for RdmaLocalBox<T> {
     type Target = T;
     fn deref(&self) -> &T {

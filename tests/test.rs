@@ -8,7 +8,7 @@ fn test_server1() -> io::Result<()> {
     let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
     bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
     rdma.handshake(remote)?;
-    let data = rdma.post_receive::<[u32; 4]>();
+    let data: RdmaLocalBox<[u32; 4]> = rdma.post_receive()?;
     std::thread::sleep(std::time::Duration::from_micros(1000));
     dbg!(*data);
     Ok(())

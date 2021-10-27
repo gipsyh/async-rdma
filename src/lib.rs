@@ -101,7 +101,7 @@ impl Rdma {
         self.qp.post_send(data)
     }
 
-    pub fn post_receive<T>(&self) -> RdmaLocalBox<T> {
+    pub fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
         self.qp.post_receive()
     }
 
@@ -142,4 +142,8 @@ pub trait RdmaLocalMemory: RdmaMemory {
 
 pub trait RdmaRemoteMemory: RdmaMemory {
     fn rkey(&self) -> u32;
+}
+
+pub trait SizedLayout {
+    fn layout() -> Layout;
 }
