@@ -25,7 +25,7 @@ pub use queue_pair::*;
 pub use rdma_box::*;
 
 use rdma_sys::ibv_access_flags;
-use std::{io, sync::Arc};
+use std::{alloc::Layout, io, sync::Arc};
 
 pub struct RdmaBuilder {
     dev_name: Option<String>,
@@ -124,10 +124,19 @@ impl Rdma {
 
 pub trait RdmaMemory {
     fn addr(&self) -> *const u8;
+
     fn length(&self) -> usize;
 }
 
 pub trait RdmaLocalMemory: RdmaMemory {
+    fn new_from_pd(
+        pd: &Arc<ProtectionDomain>,
+        layout: Layout,
+        access: ibv_access_flags,
+    ) -> io::Result<Self>
+    where
+        Self: Sized;
+
     fn lkey(&self) -> u32;
 }
 

@@ -27,7 +27,7 @@ impl ProtectionDomain {
         layout: Layout,
         access: rdma_sys::ibv_access_flags,
     ) -> io::Result<MemoryRegion> {
-        MemoryRegion::create(self, layout, access)
+        MemoryRegion::new_from_pd(self, layout, access)
     }
 }
 

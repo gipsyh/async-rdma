@@ -46,6 +46,20 @@ impl<T> RdmaMemory for RdmaLocalBox<T> {
 }
 
 impl<T> RdmaLocalMemory for RdmaLocalBox<T> {
+    fn new_from_pd(
+        pd: &Arc<ProtectionDomain>,
+        layout: Layout,
+        access: ibv_access_flags,
+    ) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mr = pd.alloc_memory_region(layout, access)?;
+        let ptr = unsafe { *mr.inner_mr }.addr as *mut T;
+        let data = NonNull::new(ptr).unwrap();
+        Ok(RdmaLocalBox { mr, data })
+    }
+
     fn lkey(&self) -> u32 {
         self.mr.lkey()
     }

@@ -10,11 +10,30 @@ pub struct MemoryRegion {
 }
 
 impl MemoryRegion {
-    pub fn create(
+    pub fn rkey(&self) -> u32 {
+        unsafe { *self.inner_mr }.rkey
+    }
+}
+
+impl RdmaMemory for MemoryRegion {
+    fn addr(&self) -> *const u8 {
+        self.data.as_ptr()
+    }
+
+    fn length(&self) -> usize {
+        self.data.len()
+    }
+}
+
+impl RdmaLocalMemory for MemoryRegion {
+    fn new_from_pd(
         pd: &Arc<ProtectionDomain>,
         layout: Layout,
         access: ibv_access_flags,
-    ) -> io::Result<Self> {
+    ) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         let data = vec![0_u8; layout.size()];
         let inner_mr = unsafe {
             rdma_sys::ibv_reg_mr(
@@ -34,22 +53,6 @@ impl MemoryRegion {
         })
     }
 
-    pub fn rkey(&self) -> u32 {
-        unsafe { *self.inner_mr }.rkey
-    }
-}
-
-impl RdmaMemory for MemoryRegion {
-    fn addr(&self) -> *const u8 {
-        self.data.as_ptr()
-    }
-
-    fn length(&self) -> usize {
-        self.data.len()
-    }
-}
-
-impl RdmaLocalMemory for MemoryRegion {
     fn lkey(&self) -> u32 {
         unsafe { *self.inner_mr }.lkey
     }
