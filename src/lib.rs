@@ -1,10 +1,5 @@
-#![feature(
-    ptr_internals,
-    allocator_api,
-    slice_ptr_get,
-    slice_ptr_len,
-    bool_to_option
-)]
+#![feature(ptr_internals, slice_ptr_get, slice_ptr_len, bool_to_option)]
+#![allow(unused)]
 
 mod completion_queue;
 mod context;

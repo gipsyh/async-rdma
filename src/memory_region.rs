@@ -1,12 +1,33 @@
 use crate::*;
 use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
-use std::{alloc::Layout, io, sync::Arc};
-#[allow(unused)]
-pub struct MemoryRegion {
+use std::{
+    alloc::Layout,
+    io,
+    ops::Range,
+    sync::{Arc, Mutex},
+};
+
+struct Root {
+    inner_mr: *mut rdma_sys::ibv_mr,
     _pd: Arc<ProtectionDomain>,
     data: Vec<u8>,
-    pub(super) inner_mr: *mut rdma_sys::ibv_mr,
+}
+
+struct Node {
+    fa: Arc<MemoryRegion>,
+}
+
+enum MemoryRegionType {
+    Root(Root),
+    Node(Node),
+}
+
+pub struct MemoryRegion {
+    addr: usize,
+    length: usize,
+    mr_type: MemoryRegionType,
+    sub: Mutex<Vec<Range<usize>>>,
 }
 
 impl MemoryRegion {
@@ -26,18 +47,52 @@ impl MemoryRegion {
         }
     }
 
+    pub(super) fn inner_mr(&self) -> *mut rdma_sys::ibv_mr {
+        if let MemoryRegionType::Root(root) = &self.mr_type {
+            root.inner_mr
+        } else {
+            panic!()
+        }
+    }
+
+    pub fn slice(self: &mut Arc<Self>, range: Range<usize>) -> Result<MemoryRegion, ()> {
+        if range.start >= range.end || range.end > self.length {
+            return Err(());
+        }
+        if !self
+            .sub
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
+        {
+            return Err(());
+        }
+        self.sub.lock().unwrap().push(range.clone());
+        Ok(MemoryRegion {
+            addr: self.addr + range.start,
+            length: range.len(),
+            mr_type: MemoryRegionType::Node(Node { fa: self.clone() }),
+            sub: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn alloc(self: &mut Arc<Self>, layout: Layout) -> Result<MemoryRegion, ()> {
+        todo!();
+    }
+
     pub fn rkey(&self) -> u32 {
-        unsafe { *self.inner_mr }.rkey
+        unsafe { *self.inner_mr() }.rkey
     }
 }
 
 impl RdmaMemory for MemoryRegion {
     fn addr(&self) -> *const u8 {
-        self.data.as_ptr()
+        self.addr as *const u8
     }
 
     fn length(&self) -> usize {
-        self.data.len()
+        self.length
     }
 }
 
@@ -63,21 +118,44 @@ impl RdmaLocalMemory for MemoryRegion {
             return Err(io::Error::last_os_error());
         }
         Ok(MemoryRegion {
-            _pd: pd.clone(),
-            data,
-            inner_mr,
+            addr: data.as_ptr() as _,
+            length: data.len(),
+            mr_type: MemoryRegionType::Root(Root {
+                inner_mr,
+                _pd: pd.clone(),
+                data,
+            }),
+            sub: Mutex::new(Vec::new()),
         })
     }
 
     fn lkey(&self) -> u32 {
-        unsafe { *self.inner_mr }.lkey
+        unsafe { *self.inner_mr() }.lkey
     }
 }
 
 impl Drop for MemoryRegion {
     fn drop(&mut self) {
-        let rc = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr) };
-        assert_eq!(rc, 0);
+        assert_eq!(self.sub.lock().unwrap().len(), 0);
+        match &self.mr_type {
+            MemoryRegionType::Root(root) => {
+                let errno = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr()) };
+                assert_eq!(errno, 0);
+            }
+            MemoryRegionType::Node(node) => {
+                let index = node
+                    .fa
+                    .sub
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .position(|x| {
+                        (self.addr - node.fa.addr..self.length + self.addr - node.fa.addr) == *x
+                    })
+                    .unwrap();
+                node.fa.sub.lock().unwrap().remove(index);
+            }
+        }
     }
 }
 
@@ -101,5 +179,27 @@ impl RdmaMemory for RemoteMemoryRegion {
 impl RdmaRemoteMemory for RemoteMemoryRegion {
     fn rkey(&self) -> u32 {
         self.rkey
+    }
+}
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn mr_slice() -> io::Result<()> {
+        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        let ctx = Arc::new(Context::open(None)?);
+        let pd = Arc::new(ctx.create_protection_domain()?);
+        let mut mr =
+            Arc::new(pd.alloc_memory_region(Layout::from_size_align(128, 8).unwrap(), access)?);
+        let sub = mr.slice(0..64).unwrap();
+        assert_eq!(mr.addr(), sub.addr());
+        assert_eq!(sub.length(), 64);
+        let sub = mr.slice(0..64).err().unwrap();
+        let sub = mr.slice(64..128).unwrap();
+        Ok(())
     }
 }

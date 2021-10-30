@@ -89,6 +89,6 @@ fn test_loopback() -> io::Result<()> {
     let box2 = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
     rdma.write(&box2, &box1.remote_box())?;
     std::thread::sleep(std::time::Duration::from_secs(1));
-    dbg!(*box1);
+    assert_eq!(*box1, [1, 2, 3, 4]);
     Ok(())
 }
