@@ -19,6 +19,8 @@ struct LocalRoot {
     data: Vec<u8>,
 }
 
+struct RemoteRoot {}
+
 enum Kind {
     LocalRoot(LocalRoot),
     LocalNode(Node),
@@ -32,6 +34,13 @@ pub struct MemoryRegion {
     key: u32,
     kind: Kind,
     sub: Mutex<Vec<Range<usize>>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RemoteToken {
+    pub addr: usize,
+    pub length: usize,
+    pub rkey: u32,
 }
 
 impl MemoryRegion {
@@ -58,11 +67,21 @@ impl MemoryRegion {
         MemoryRegion::new_from_pd(pd, layout, access)
     }
 
-    pub fn remote_mr(&self) -> RemoteMemoryRegion {
-        RemoteMemoryRegion {
+    pub fn remote_token(&self) -> RemoteToken {
+        RemoteToken {
             addr: self.addr() as _,
-            len: self.length(),
-            rkey: self.rkey(),
+            length: self.length(),
+            rkey: unsafe { *self.inner_mr() }.rkey,
+        }
+    }
+
+    pub fn from_remote_token(token: RemoteToken) -> Self {
+        Self {
+            addr: token.addr,
+            length: token.length,
+            key: token.rkey,
+            kind: Kind::RemoteRoot,
+            sub: Mutex::new(Vec::new()),
         }
     }
 
@@ -128,10 +147,6 @@ impl MemoryRegion {
         };
         self.slice(range)
     }
-
-    pub fn rkey(&self) -> u32 {
-        unsafe { *self.inner_mr() }.rkey
-    }
 }
 
 impl RdmaMemory for MemoryRegion {
@@ -179,6 +194,14 @@ impl RdmaLocalMemory for MemoryRegion {
     }
 
     fn lkey(&self) -> u32 {
+        assert!(self.is_local());
+        self.key
+    }
+}
+
+impl RdmaRemoteMemory for MemoryRegion {
+    fn rkey(&self) -> u32 {
+        assert!(!self.is_local());
         self.key
     }
 }
@@ -206,29 +229,6 @@ impl Drop for MemoryRegion {
             }
             _ => todo!(),
         }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RemoteMemoryRegion {
-    pub addr: usize,
-    pub len: usize,
-    pub rkey: u32,
-}
-
-impl RdmaMemory for RemoteMemoryRegion {
-    fn addr(&self) -> *const u8 {
-        self.addr as *const u8
-    }
-
-    fn length(&self) -> usize {
-        self.len
-    }
-}
-
-impl RdmaRemoteMemory for RemoteMemoryRegion {
-    fn rkey(&self) -> u32 {
-        self.rkey
     }
 }
 
@@ -270,6 +270,38 @@ mod tests {
             .alloc(Layout::from_size_align(128, 8).unwrap())
             .err()
             .unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn server() -> io::Result<()> {
+        let rdma = RdmaBuilder::default().build()?;
+
+        let (stream, _) = std::net::TcpListener::bind("127.0.0.1:8000")?.accept()?;
+        let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
+        bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
+
+        rdma.handshake(remote)?;
+        let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
+        let token: RemoteToken = bincode::deserialize_from(&stream).unwrap();
+        let remote_mr = MemoryRegion::from_remote_token(token);
+        rdma.qp.write(&local_box, &remote_mr)?;
+        Ok(())
+    }
+
+    #[test]
+    fn client() -> io::Result<()> {
+        let rdma = RdmaBuilder::default().build()?;
+
+        let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;
+        bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
+        let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
+
+        rdma.handshake(remote)?;
+        let local_mr = MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap();
+        bincode::serialize_into(&stream, &local_mr.remote_token()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        dbg!(unsafe { *(local_mr.addr() as *mut i32) });
         Ok(())
     }
 }
