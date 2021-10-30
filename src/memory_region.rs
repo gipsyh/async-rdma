@@ -52,6 +52,10 @@ impl MemoryRegion {
         matches!(self.kind, Kind::LocalRoot(_) | Kind::LocalNode(_))
     }
 
+    fn is_leaf(&self) -> bool {
+        self.sub.lock().unwrap().len() == 0
+    }
+
     fn root(self: &Arc<Self>) -> Arc<MemoryRegion> {
         match &self.kind {
             Kind::LocalNode(node) | Kind::RemoteNode(node) => node.root.clone(),
@@ -67,7 +71,7 @@ impl MemoryRegion {
         MemoryRegion::new_from_pd(pd, layout, access)
     }
 
-    pub fn remote_token(&self) -> RemoteToken {
+    pub fn remote_token(self: &Arc<Self>) -> RemoteToken {
         RemoteToken {
             addr: self.addr() as _,
             length: self.length(),
@@ -151,10 +155,12 @@ impl MemoryRegion {
 
 impl RdmaMemory for MemoryRegion {
     fn addr(&self) -> *const u8 {
+        assert!(self.is_leaf());
         self.addr as *const u8
     }
 
     fn length(&self) -> usize {
+        assert!(self.is_leaf());
         self.length
     }
 }
@@ -194,6 +200,7 @@ impl RdmaLocalMemory for MemoryRegion {
     }
 
     fn lkey(&self) -> u32 {
+        assert!(self.is_leaf());
         assert!(self.is_local());
         self.key
     }
@@ -201,6 +208,7 @@ impl RdmaLocalMemory for MemoryRegion {
 
 impl RdmaRemoteMemory for MemoryRegion {
     fn rkey(&self) -> u32 {
+        assert!(self.is_leaf());
         assert!(!self.is_local());
         self.key
     }
@@ -298,7 +306,7 @@ mod tests {
         let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
 
         rdma.handshake(remote)?;
-        let local_mr = MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap();
+        let local_mr = Arc::new(MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap());
         bincode::serialize_into(&stream, &local_mr.remote_token()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
         dbg!(unsafe { *(local_mr.addr() as *mut i32) });
