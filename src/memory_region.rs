@@ -8,29 +8,48 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-struct Root {
+struct Node {
+    fa: Arc<MemoryRegion>,
+    root: Arc<MemoryRegion>,
+}
+
+struct LocalRoot {
     inner_mr: *mut rdma_sys::ibv_mr,
     _pd: Arc<ProtectionDomain>,
     data: Vec<u8>,
 }
 
-struct Node {
-    fa: Arc<MemoryRegion>,
-}
-
-enum MemoryRegionType {
-    Root(Root),
-    Node(Node),
+enum Kind {
+    LocalRoot(LocalRoot),
+    LocalNode(Node),
+    RemoteRoot,
+    RemoteNode(Node),
 }
 
 pub struct MemoryRegion {
     addr: usize,
     length: usize,
-    mr_type: MemoryRegionType,
+    key: u32,
+    kind: Kind,
     sub: Mutex<Vec<Range<usize>>>,
 }
 
 impl MemoryRegion {
+    pub fn is_node(&self) -> bool {
+        matches!(self.kind, Kind::LocalNode(_) | Kind::RemoteNode(_))
+    }
+
+    pub fn is_local(&self) -> bool {
+        matches!(self.kind, Kind::LocalRoot(_) | Kind::LocalNode(_))
+    }
+
+    fn root(self: &Arc<Self>) -> Arc<MemoryRegion> {
+        match &self.kind {
+            Kind::LocalNode(node) | Kind::RemoteNode(node) => node.root.clone(),
+            _ => self.clone(),
+        }
+    }
+
     pub fn new(pd: &Arc<ProtectionDomain>, layout: Layout) -> io::Result<Self> {
         let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
@@ -48,8 +67,8 @@ impl MemoryRegion {
     }
 
     pub(super) fn inner_mr(&self) -> *mut rdma_sys::ibv_mr {
-        if let MemoryRegionType::Root(root) = &self.mr_type {
-            root.inner_mr
+        if let Kind::LocalRoot(lroot) = &self.kind {
+            lroot.inner_mr
         } else {
             panic!()
         }
@@ -73,10 +92,20 @@ impl MemoryRegion {
             .lock()
             .unwrap()
             .sort_by(|a, b| a.start.cmp(&b.start));
+        let new_node = Node {
+            fa: self.clone(),
+            root: self.root(),
+        };
+        let kind = if self.is_local() {
+            Kind::LocalNode(new_node)
+        } else {
+            Kind::RemoteNode(new_node)
+        };
         Ok(MemoryRegion {
             addr: self.addr + range.start,
             length: range.len(),
-            mr_type: MemoryRegionType::Node(Node { fa: self.clone() }),
+            key: self.key,
+            kind,
             sub: Mutex::new(Vec::new()),
         })
     }
@@ -139,7 +168,8 @@ impl RdmaLocalMemory for MemoryRegion {
         Ok(MemoryRegion {
             addr: data.as_ptr() as _,
             length: data.len(),
-            mr_type: MemoryRegionType::Root(Root {
+            key: unsafe { *inner_mr }.lkey,
+            kind: Kind::LocalRoot(LocalRoot {
                 inner_mr,
                 _pd: pd.clone(),
                 data,
@@ -149,19 +179,19 @@ impl RdmaLocalMemory for MemoryRegion {
     }
 
     fn lkey(&self) -> u32 {
-        unsafe { *self.inner_mr() }.lkey
+        self.key
     }
 }
 
 impl Drop for MemoryRegion {
     fn drop(&mut self) {
         assert_eq!(self.sub.lock().unwrap().len(), 0);
-        match &self.mr_type {
-            MemoryRegionType::Root(root) => {
+        match &self.kind {
+            Kind::LocalRoot(root) => {
                 let errno = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr()) };
                 assert_eq!(errno, 0);
             }
-            MemoryRegionType::Node(node) => {
+            Kind::LocalNode(node) | Kind::RemoteNode(node) => {
                 let index = node
                     .fa
                     .sub
@@ -174,6 +204,7 @@ impl Drop for MemoryRegion {
                     .unwrap();
                 node.fa.sub.lock().unwrap().remove(index);
             }
+            _ => todo!(),
         }
     }
 }

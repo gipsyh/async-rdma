@@ -29,6 +29,7 @@ impl CompletionQueue {
         let ec = ec.cloned();
         Ok(CompletionQueue { ec, inner_cq })
     }
+
     pub fn req_notify(&self, solicited_only: bool) -> io::Result<()> {
         if self.ec.is_none() {
             return Err(io::Error::new(
