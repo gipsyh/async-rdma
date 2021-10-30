@@ -69,6 +69,10 @@ impl MemoryRegion {
             return Err(());
         }
         self.sub.lock().unwrap().push(range.clone());
+        self.sub
+            .lock()
+            .unwrap()
+            .sort_by(|a, b| a.start.cmp(&b.start));
         Ok(MemoryRegion {
             addr: self.addr + range.start,
             length: range.len(),
@@ -78,7 +82,22 @@ impl MemoryRegion {
     }
 
     pub fn alloc(self: &mut Arc<Self>, layout: Layout) -> Result<MemoryRegion, ()> {
-        todo!();
+        let range = {
+            let mut last = 0;
+            let mut ans = Err(());
+            for range in self.sub.lock().unwrap().iter() {
+                if last + layout.size() <= range.start {
+                    ans = Ok(last..last + layout.size());
+                    break;
+                }
+                last = range.end
+            }
+            if last + layout.size() <= self.length {
+                ans = Ok(last..last + layout.size());
+            }
+            ans?
+        };
+        self.slice(range)
     }
 
     pub fn rkey(&self) -> u32 {
@@ -181,10 +200,10 @@ impl RdmaRemoteMemory for RemoteMemoryRegion {
         self.rkey
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::*;
-
     #[test]
     fn mr_slice() -> io::Result<()> {
         let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
@@ -200,6 +219,26 @@ mod tests {
         assert_eq!(sub.length(), 64);
         let sub = mr.slice(0..64).err().unwrap();
         let sub = mr.slice(64..128).unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn mr_alloc() -> io::Result<()> {
+        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        let ctx = Arc::new(Context::open(None)?);
+        let pd = Arc::new(ctx.create_protection_domain()?);
+        let mut mr =
+            Arc::new(pd.alloc_memory_region(Layout::from_size_align(128, 8).unwrap(), access)?);
+        let sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
+        drop(sub);
+        let sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
+        let sub = mr
+            .alloc(Layout::from_size_align(128, 8).unwrap())
+            .err()
+            .unwrap();
         Ok(())
     }
 }
