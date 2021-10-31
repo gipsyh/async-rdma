@@ -6,6 +6,7 @@ mod context;
 mod event_channel;
 mod gid;
 mod memory_region;
+mod memory_window;
 mod protection_domain;
 mod queue_pair;
 mod rdma_box;
