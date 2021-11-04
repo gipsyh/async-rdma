@@ -94,9 +94,29 @@ impl Drop for Context {
 #[allow(unused)]
 mod tests {
     use crate::*;
+    use std::process::Command;
+
+    fn rdma_dev() -> String {
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg("rdma link")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .to_string()
+            .split(' ')
+            .nth(1)
+            .unwrap()
+            .to_string()
+            .split('/')
+            .nth(0)
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn test1() {
-        let ctx = Context::open(Some("rdma")).unwrap();
+        let ctx = Context::open(Some(&rdma_dev())).unwrap();
     }
 
     #[test]
@@ -106,11 +126,6 @@ mod tests {
 
     #[test]
     fn test3() {
-        let ctx = Context::open(Some("rdma1")).err().unwrap();
-    }
-
-    #[test]
-    fn test4() {
         let ctx = Context::open(None).unwrap();
     }
 }

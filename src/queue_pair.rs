@@ -91,13 +91,6 @@ impl QueuePairBuilder {
     }
 }
 
-// enum QueuePairState {
-//     Prepared,
-//     Init,
-//     ReadyToReceive,
-//     ReadyToSend,
-// }
-
 #[derive(Copy, Clone, PartialEq, Eq, Debug, serde::Serialize, serde:: Deserialize)]
 pub struct QueuePairEndpoint {
     qp_num: u32,
@@ -108,7 +101,6 @@ pub struct QueuePairEndpoint {
 pub struct QueuePair {
     pd: Arc<ProtectionDomain>,
     cq: Arc<CompletionQueue>,
-    // state: QueuePairState,
     inner_qp: *mut rdma_sys::ibv_qp,
 }
 
