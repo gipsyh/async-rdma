@@ -209,7 +209,7 @@ impl RdmaLocalMemory for MemoryRegion {
 impl RdmaRemoteMemory for MemoryRegion {
     fn rkey(&self) -> u32 {
         assert!(self.is_leaf());
-        assert!(!self.is_local());
+        // assert!(!self.is_local());
         self.key
     }
 }
