@@ -1,6 +1,7 @@
 #![feature(ptr_internals, slice_ptr_get, slice_ptr_len, bool_to_option)]
 #![allow(unused)]
 
+mod agent;
 mod completion_queue;
 mod context;
 mod event_channel;
@@ -10,7 +11,9 @@ mod memory_window;
 mod protection_domain;
 mod queue_pair;
 mod rdma_box;
+mod resource;
 
+pub use agent::*;
 pub use completion_queue::*;
 pub use context::*;
 pub use event_channel::*;
@@ -19,6 +22,7 @@ pub use memory_region::*;
 pub use protection_domain::*;
 pub use queue_pair::*;
 pub use rdma_box::*;
+pub use resource::*;
 
 use rdma_sys::ibv_access_flags;
 use std::{alloc::Layout, io, sync::Arc};

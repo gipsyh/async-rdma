@@ -37,7 +37,7 @@ pub struct MemoryRegion {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct RemoteToken {
+pub struct MemoryRegionRemoteToken {
     pub addr: usize,
     pub length: usize,
     pub rkey: u32,
@@ -71,15 +71,24 @@ impl MemoryRegion {
         MemoryRegion::new_from_pd(pd, layout, access)
     }
 
-    pub fn remote_token(self: &Arc<Self>) -> RemoteToken {
-        RemoteToken {
+    pub fn remote_token(&self) -> MemoryRegionRemoteToken {
+        MemoryRegionRemoteToken {
             addr: self.addr() as _,
             length: self.length(),
             rkey: unsafe { *self.inner_mr() }.rkey,
         }
     }
 
-    pub fn from_remote_token(token: RemoteToken) -> Self {
+    // pub fn send_token<W: std::io::Write>(
+    //     self: Arc<Self>,
+    //     write: W,
+    //     fake_owner: &mut ResourceFakeOwner,
+    // ) {
+    //     bincode::serialize_into(write, &self.remote_token()).unwrap();
+    //     fake_owner.own(self);
+    // }
+
+    pub fn from_remote_token(token: MemoryRegionRemoteToken) -> Self {
         Self {
             addr: token.addr,
             length: token.length,
@@ -291,7 +300,7 @@ mod tests {
 
         rdma.handshake(remote)?;
         let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
-        let token: RemoteToken = bincode::deserialize_from(&stream).unwrap();
+        let token: MemoryRegionRemoteToken = bincode::deserialize_from(&stream).unwrap();
         let remote_mr = MemoryRegion::from_remote_token(token);
         rdma.qp.write(&local_box, &remote_mr)?;
         Ok(())
