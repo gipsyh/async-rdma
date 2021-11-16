@@ -90,6 +90,10 @@ impl Drop for Context {
     }
 }
 
+unsafe impl Send for Context {}
+
+unsafe impl Sync for Context {}
+
 #[cfg(test)]
 #[allow(unused)]
 mod tests {

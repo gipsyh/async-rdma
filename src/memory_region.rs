@@ -19,12 +19,19 @@ struct LocalRoot {
     data: Vec<u8>,
 }
 
-struct RemoteRoot {}
+unsafe impl Send for LocalRoot {}
+
+unsafe impl Sync for LocalRoot {}
+
+struct RemoteRoot {
+    token: MemoryRegionRemoteToken,
+    agent: Arc<AgentClient>,
+}
 
 enum Kind {
     LocalRoot(LocalRoot),
     LocalNode(Node),
-    RemoteRoot,
+    RemoteRoot(RemoteRoot),
     RemoteNode(Node),
 }
 
@@ -36,7 +43,7 @@ pub struct MemoryRegion {
     sub: Mutex<Vec<Range<usize>>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct MemoryRegionRemoteToken {
     pub addr: usize,
     pub length: usize,
@@ -79,21 +86,12 @@ impl MemoryRegion {
         }
     }
 
-    // pub fn send_token<W: std::io::Write>(
-    //     self: Arc<Self>,
-    //     write: W,
-    //     fake_owner: &mut ResourceFakeOwner,
-    // ) {
-    //     bincode::serialize_into(write, &self.remote_token()).unwrap();
-    //     fake_owner.own(self);
-    // }
-
-    pub fn from_remote_token(token: MemoryRegionRemoteToken) -> Self {
+    pub fn from_remote_token(token: MemoryRegionRemoteToken, agent: Arc<AgentClient>) -> Self {
         Self {
             addr: token.addr,
             length: token.length,
             key: token.rkey,
-            kind: Kind::RemoteRoot,
+            kind: Kind::RemoteRoot(RemoteRoot { token, agent }),
             sub: Mutex::new(Vec::new()),
         }
     }
@@ -244,10 +242,16 @@ impl Drop for MemoryRegion {
                     .unwrap();
                 node.fa.sub.lock().unwrap().remove(index);
             }
-            _ => todo!(),
+            Kind::RemoteRoot(root) => {
+                root.agent.release_mr(root.token);
+            }
         }
     }
 }
+
+unsafe impl Sync for MemoryRegion {}
+
+unsafe impl Send for MemoryRegion {}
 
 #[cfg(test)]
 mod tests {
@@ -290,35 +294,35 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn server() -> io::Result<()> {
-        let rdma = RdmaBuilder::default().build()?;
+    // #[test]
+    // fn server() -> io::Result<()> {
+    //     let rdma = RdmaBuilder::default().build()?;
 
-        let (stream, _) = std::net::TcpListener::bind("127.0.0.1:8000")?.accept()?;
-        let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
-        bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
+    //     let (stream, _) = std::net::TcpListener::bind("127.0.0.1:8000")?.accept()?;
+    //     let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
+    //     bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
 
-        rdma.handshake(remote)?;
-        let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
-        let token: MemoryRegionRemoteToken = bincode::deserialize_from(&stream).unwrap();
-        let remote_mr = MemoryRegion::from_remote_token(token);
-        rdma.qp.write(&local_box, &remote_mr)?;
-        Ok(())
-    }
+    //     rdma.handshake(remote)?;
+    //     let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
+    //     let token: MemoryRegionRemoteToken = bincode::deserialize_from(&stream).unwrap();
+    //     let remote_mr = MemoryRegion::from_remote_token(token);
+    //     rdma.qp.write(&local_box, &remote_mr)?;
+    //     Ok(())
+    // }
 
-    #[test]
-    fn client() -> io::Result<()> {
-        let rdma = RdmaBuilder::default().build()?;
+    // #[test]
+    // fn client() -> io::Result<()> {
+    //     let rdma = RdmaBuilder::default().build()?;
 
-        let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;
-        bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
-        let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
+    //     let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;
+    //     bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
+    //     let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
 
-        rdma.handshake(remote)?;
-        let local_mr = Arc::new(MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap());
-        bincode::serialize_into(&stream, &local_mr.remote_token()).unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        dbg!(unsafe { *(local_mr.addr() as *mut i32) });
-        Ok(())
-    }
+    //     rdma.handshake(remote)?;
+    //     let local_mr = Arc::new(MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap());
+    //     bincode::serialize_into(&stream, &local_mr.remote_token()).unwrap();
+    //     std::thread::sleep(std::time::Duration::from_secs(1));
+    //     dbg!(unsafe { *(local_mr.addr() as *mut i32) });
+    //     Ok(())
+    // }
 }

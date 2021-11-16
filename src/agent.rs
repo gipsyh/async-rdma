@@ -1,49 +1,146 @@
+use bincode::Deserializer;
+use serde::{Deserialize, Serialize};
+
 use crate::*;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
-    sync::Arc,
+    net::{TcpListener, TcpStream, ToSocketAddrs},
+    os::unix::{net::Incoming, prelude::JoinHandleExt},
+    sync::{Arc, Mutex},
+    thread::{spawn, JoinHandle},
     time::SystemTime,
 };
 
-// trait Resource {
+#[derive(Serialize, Deserialize)]
+struct AllocMRRequest {
+    size: usize,
+    align: usize,
+}
 
-// }
+#[derive(Serialize, Deserialize)]
+struct AllocMRResponse {
+    mr_token: MemoryRegionRemoteToken,
+}
 
-// trait ResourceKey {
+#[derive(Serialize, Deserialize)]
+struct ReleaseMRRequest {
+    mr_token: MemoryRegionRemoteToken,
+}
 
-// }
-// trait RemoteOwnResource {
-//     fn key(&self) -> u128;
-// }
+#[derive(Serialize, Deserialize)]
+struct ReleaseMRResponse {
+    status: usize,
+}
 
-// struct Resource {
-//     data: Arc<MemoryRegion>,
-//     // release_time: SystemTime,
-// }
+#[derive(Serialize, Deserialize)]
+enum Request {
+    AllocMR(AllocMRRequest),
+    ReceiveMR,
+    ReleaseMR(ReleaseMRRequest),
+}
 
-// pub struct ResourceFakeOwner {
-//     own: BTreeMap<MemoryRegionRemoteToken, Resource>,
-// }
+#[derive(Serialize, Deserialize)]
+enum Response {
+    AllocMR(AllocMRResponse),
+    ReceiveMR,
+    ReleaseMR(ReleaseMRResponse),
+}
 
-// impl ResourceFakeOwner {
-//     fn release(&mut self, token: MemoryRegionRemoteToken) {}
-//     pub fn own(&mut self, obj: Arc<MemoryRegion>) {
-//         todo!()
-//         // self.own.insert(obj.remote_token(), Resource { data: obj });
-//     }
-// }
+fn alloc_memory_region(
+    pd: &Arc<ProtectionDomain>,
+    request: AllocMRRequest,
+    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+) -> Response {
+    let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+        | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+        | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+        | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+    let mr = Arc::new(
+        pd.alloc_memory_region(
+            Layout::from_size_align(request.size, request.align).unwrap(),
+            access,
+        )
+        .unwrap(),
+    );
+    let response = AllocMRResponse {
+        mr_token: mr.remote_token(),
+    };
+    own.insert(mr.remote_token(), mr);
+    Response::AllocMR(response)
+}
 
-// struct A {}
-// struct B {}
-// impl RemoteOwnResource for A {}
-// impl RemoteOwnResource for B {}
+fn release_memory_region(
+    request: ReleaseMRRequest,
+    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+) -> Response {
+    own.remove(&request.mr_token);
+    Response::ReleaseMR(ReleaseMRResponse { status: 0 })
+}
 
-// #[test]
-// fn test() {
-//     let mut b = ResourceFakeOwner {
-//         own: BTreeMap::new(),
-//     };
-//     b.own(Arc::new(A {}));
-//     b.own(Arc::new(B {}));
-// }
+fn agent_main(stream: TcpStream, pd: Arc<ProtectionDomain>) {
+    let mut own = HashMap::new();
+    loop {
+        let request: Request = bincode::deserialize_from(&stream).unwrap();
+        let response = match request {
+            Request::AllocMR(request) => alloc_memory_region(&pd, request, &mut own),
+            Request::ReceiveMR => todo!(),
+            Request::ReleaseMR(request) => release_memory_region(request, &mut own),
+        };
+        bincode::serialize_into(&stream, &response).unwrap();
+    }
+}
+
+pub struct AgentServer {
+    handle: JoinHandle<()>,
+}
+
+impl AgentServer {
+    pub fn new(stream: TcpStream, pd: Arc<ProtectionDomain>) -> Self {
+        let handle = spawn(move || agent_main(stream, pd));
+        Self { handle }
+    }
+
+    pub fn transfer_mr(&mut self, mr: Arc<MemoryRegion>) {
+        todo!()
+    }
+}
+
+pub struct AgentClient {
+    stream: TcpStream,
+}
+
+impl AgentClient {
+    pub fn new(stream: TcpStream) -> Self {
+        Self { stream }
+    }
+
+    pub fn connect<A: ToSocketAddrs>(addr: A) -> Self {
+        todo!()
+    }
+
+    pub fn alloc_mr(self: &Arc<Self>, layout: Layout) -> MemoryRegion {
+        let request = Request::AllocMR(AllocMRRequest {
+            size: layout.size(),
+            align: layout.align(),
+        });
+        bincode::serialize_into(&self.stream, &request).unwrap();
+        let response: Response = bincode::deserialize_from(&self.stream).unwrap();
+        if let Response::AllocMR(response) = response {
+            MemoryRegion::from_remote_token(response.mr_token, self.clone())
+        } else {
+            panic!();
+        }
+    }
+
+    pub fn receive_mr() -> MemoryRegion {
+        todo!()
+    }
+
+    pub fn release_mr(self: &Arc<Self>, mr_token: MemoryRegionRemoteToken) {
+        let request = ReleaseMRRequest { mr_token };
+    }
+}
+
+#[test]
+fn test() {}

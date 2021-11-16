@@ -37,3 +37,7 @@ impl Drop for ProtectionDomain {
         assert_eq!(errno, 0);
     }
 }
+
+unsafe impl Send for ProtectionDomain {}
+
+unsafe impl Sync for ProtectionDomain {}

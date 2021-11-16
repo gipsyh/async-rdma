@@ -25,7 +25,12 @@ pub use rdma_box::*;
 pub use resource::*;
 
 use rdma_sys::ibv_access_flags;
-use std::{alloc::Layout, io, sync::Arc};
+use std::{
+    alloc::Layout,
+    io,
+    net::{TcpListener, TcpStream, ToSocketAddrs},
+    sync::Arc,
+};
 
 pub struct RdmaBuilder {
     dev_name: Option<String>,
@@ -67,6 +72,8 @@ pub struct Rdma {
     cq: Arc<CompletionQueue>,
     pub pd: Arc<ProtectionDomain>,
     pub qp: Arc<QueuePair>,
+    agent_server: Option<Arc<AgentServer>>,
+    agent_client: Option<Arc<AgentClient>>,
 }
 
 impl Rdma {
@@ -84,6 +91,8 @@ impl Rdma {
             cq,
             pd,
             qp,
+            agent_server: None,
+            agent_client: None,
         })
     }
 
@@ -120,6 +129,61 @@ impl Rdma {
     {
         self.qp.read(local, remote)
     }
+
+    fn set_agent_client(&mut self, stream: TcpStream) {
+        self.agent_client = Some(Arc::new(AgentClient::new(stream)));
+    }
+
+    fn set_agent_server(&mut self, stream: TcpStream) {
+        self.agent_server = Some(Arc::new(AgentServer::new(stream, self.pd.clone())));
+    }
+
+    fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        let mut rdma = RdmaBuilder::default().build()?;
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
+        let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
+        rdma.handshake(remote)?;
+        rdma.set_agent_client(stream);
+        Ok(rdma)
+    }
+
+    fn alloc_memory_region(&self, layout: Layout) -> io::Result<MemoryRegion> {
+        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        self.pd.alloc_memory_region(layout, access)
+    }
+
+    fn alloc_remote_memory_region(&self, layout: Layout) -> MemoryRegion {
+        if let Some(agent_clinet) = &self.agent_client {
+            agent_clinet.alloc_mr(layout)
+        } else {
+            panic!();
+        }
+    }
+}
+
+pub struct RdmaListener {
+    tcp_listener: TcpListener,
+}
+
+impl RdmaListener {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        let tcp_listener = TcpListener::bind(addr)?;
+        Ok(Self { tcp_listener })
+    }
+
+    pub fn accept(&self) -> io::Result<Rdma> {
+        let (tcp_stream, socket_addr) = self.tcp_listener.accept()?;
+        let mut rdma = RdmaBuilder::default().build()?;
+        let remote: QueuePairEndpoint = bincode::deserialize_from(&tcp_stream).unwrap();
+        bincode::serialize_into(&tcp_stream, &rdma.endpoint()).unwrap();
+        rdma.handshake(remote)?;
+        rdma.set_agent_server(tcp_stream);
+        Ok(rdma)
+    }
 }
 
 pub trait RdmaMemory {
@@ -146,4 +210,23 @@ pub trait RdmaRemoteMemory: RdmaMemory {
 
 pub trait SizedLayout {
     fn layout() -> Layout;
+}
+
+mod tests {
+    use std::{alloc::Layout, net::TcpListener};
+
+    use crate::{Rdma, RdmaListener};
+
+    #[test]
+    fn server() {
+        let rdmalistener = RdmaListener::bind("127.0.0.1:5555").unwrap();
+        let rdma = rdmalistener.accept().unwrap();
+    }
+
+    #[test]
+    fn client() {
+        let rdma = Rdma::connect("127.0.0.1:5555").unwrap();
+        let rmr = rdma.alloc_remote_memory_region(Layout::new::<[i32; 4]>());
+        drop(rmr);
+    }
 }
