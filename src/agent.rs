@@ -78,16 +78,16 @@ fn release_memory_region(
     Response::ReleaseMR(ReleaseMRResponse { status: 0 })
 }
 
-fn agent_main(stream: TcpStream, pd: Arc<ProtectionDomain>) {
+fn agent_main(mut stream: MessageStream, pd: Arc<ProtectionDomain>) {
     let mut own = HashMap::new();
     loop {
-        let request: Request = bincode::deserialize_from(&stream).unwrap();
+        let request: Request = bincode::deserialize_from(&mut stream).unwrap();
         let response = match request {
             Request::AllocMR(request) => alloc_memory_region(&pd, request, &mut own),
             Request::ReceiveMR => todo!(),
             Request::ReleaseMR(request) => release_memory_region(request, &mut own),
         };
-        bincode::serialize_into(&stream, &response).unwrap();
+        bincode::serialize_into(&mut stream, &response).unwrap();
     }
 }
 
@@ -96,7 +96,7 @@ pub struct AgentServer {
 }
 
 impl AgentServer {
-    pub fn new(stream: TcpStream, pd: Arc<ProtectionDomain>) -> Self {
+    pub fn new(stream: MessageStream, pd: Arc<ProtectionDomain>) -> Self {
         let handle = spawn(move || agent_main(stream, pd));
         Self { handle }
     }
@@ -107,12 +107,14 @@ impl AgentServer {
 }
 
 pub struct AgentClient {
-    stream: TcpStream,
+    stream: Mutex<MessageStream>,
 }
 
 impl AgentClient {
-    pub fn new(stream: TcpStream) -> Self {
-        Self { stream }
+    pub fn new(stream: MessageStream) -> Self {
+        Self {
+            stream: Mutex::new(stream),
+        }
     }
 
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Self {
@@ -124,8 +126,9 @@ impl AgentClient {
             size: layout.size(),
             align: layout.align(),
         });
-        bincode::serialize_into(&self.stream, &request).unwrap();
-        let response: Response = bincode::deserialize_from(&self.stream).unwrap();
+        let mut stream = self.stream.lock().unwrap();
+        bincode::serialize_into(&mut *stream, &request).unwrap();
+        let response: Response = bincode::deserialize_from(&mut *stream).unwrap();
         if let Response::AllocMR(response) = response {
             MemoryRegion::from_remote_token(response.mr_token, self.clone())
         } else {

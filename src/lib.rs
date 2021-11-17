@@ -1,4 +1,10 @@
-#![feature(ptr_internals, slice_ptr_get, slice_ptr_len, bool_to_option)]
+#![feature(
+    ptr_internals,
+    slice_ptr_get,
+    slice_ptr_len,
+    bool_to_option,
+    cursor_remaining
+)]
 #![allow(unused)]
 
 mod agent;
@@ -8,6 +14,7 @@ mod event_channel;
 mod gid;
 mod memory_region;
 mod memory_window;
+mod message_line;
 mod protection_domain;
 mod queue_pair;
 mod rdma_box;
@@ -20,6 +27,7 @@ pub use context::*;
 pub use event_channel::*;
 pub use gid::*;
 pub use memory_region::*;
+pub use message_line::*;
 pub use protection_domain::*;
 pub use queue_pair::*;
 pub use rdma_box::*;
@@ -132,11 +140,11 @@ impl Rdma {
         self.qp.read(local, remote)
     }
 
-    fn set_agent_client(&mut self, stream: TcpStream) {
+    fn set_agent_client(&mut self, stream: MessageStream) {
         self.agent_client = Some(Arc::new(AgentClient::new(stream)));
     }
 
-    fn set_agent_server(&mut self, stream: TcpStream) {
+    fn set_agent_server(&mut self, stream: MessageStream) {
         self.agent_server = Some(Arc::new(AgentServer::new(stream, self.pd.clone())));
     }
 
@@ -146,7 +154,9 @@ impl Rdma {
         bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
         let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
         rdma.handshake(remote)?;
-        rdma.set_agent_client(stream);
+        let (_, client, server, _normal) = MessageLine::new(stream);
+        rdma.set_agent_client(client);
+        rdma.set_agent_server(server);
         Ok(rdma)
     }
 
@@ -183,7 +193,9 @@ impl RdmaListener {
         let remote: QueuePairEndpoint = bincode::deserialize_from(&tcp_stream).unwrap();
         bincode::serialize_into(&tcp_stream, &rdma.endpoint()).unwrap();
         rdma.handshake(remote)?;
-        rdma.set_agent_server(tcp_stream);
+        let (_, client, server, _normal) = MessageLine::new(tcp_stream);
+        rdma.set_agent_client(client);
+        rdma.set_agent_server(server);
         Ok(rdma)
     }
 }
@@ -223,6 +235,7 @@ mod tests {
     fn server() {
         let rdmalistener = RdmaListener::bind("127.0.0.1:5555").unwrap();
         let rdma = rdmalistener.accept().unwrap();
+        loop {}
     }
 
     #[test]
@@ -230,5 +243,6 @@ mod tests {
         let rdma = Rdma::connect("127.0.0.1:5555").unwrap();
         let rmr = rdma.alloc_remote_memory_region(Layout::new::<[i32; 4]>());
         drop(rmr);
+        loop {}
     }
 }
