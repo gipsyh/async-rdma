@@ -84,6 +84,7 @@ pub struct Rdma {
     pub qp: Arc<QueuePair>,
     agent_server: Option<Arc<AgentServer>>,
     agent_client: Option<Arc<AgentClient>>,
+    pub normal: Option<MessageStream>,
 }
 
 impl Rdma {
@@ -103,6 +104,7 @@ impl Rdma {
             qp,
             agent_server: None,
             agent_client: None,
+            normal: None,
         })
     }
 
@@ -148,15 +150,20 @@ impl Rdma {
         self.agent_server = Some(Arc::new(AgentServer::new(stream, self.pd.clone())));
     }
 
+    fn set_normal(&mut self, stream: MessageStream) {
+        self.normal = Some(stream);
+    }
+
     fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let mut rdma = RdmaBuilder::default().build()?;
         let stream = std::net::TcpStream::connect(addr).unwrap();
         bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
         let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
         rdma.handshake(remote)?;
-        let (_, client, server, _normal) = MessageLine::new(stream);
+        let (_, client, server, normal) = MessageLine::new(stream);
         rdma.set_agent_client(client);
         rdma.set_agent_server(server);
+        rdma.set_normal(normal);
         Ok(rdma)
     }
 
@@ -193,9 +200,10 @@ impl RdmaListener {
         let remote: QueuePairEndpoint = bincode::deserialize_from(&tcp_stream).unwrap();
         bincode::serialize_into(&tcp_stream, &rdma.endpoint()).unwrap();
         rdma.handshake(remote)?;
-        let (_, client, server, _normal) = MessageLine::new(tcp_stream);
+        let (_, client, server, normal) = MessageLine::new(tcp_stream);
         rdma.set_agent_client(client);
         rdma.set_agent_server(server);
+        rdma.set_normal(normal);
         Ok(rdma)
     }
 }
@@ -227,22 +235,27 @@ pub trait SizedLayout {
 }
 
 mod tests {
-    use std::{alloc::Layout, net::TcpListener};
+    use std::{alloc::Layout, io::Write, net::TcpListener};
 
-    use crate::{Rdma, RdmaListener};
+    use crate::{Rdma, RdmaListener, RdmaMemory};
 
     #[test]
     fn server() {
         let rdmalistener = RdmaListener::bind("127.0.0.1:5555").unwrap();
         let rdma = rdmalistener.accept().unwrap();
+        let ptr: usize = bincode::deserialize_from(rdma.normal.unwrap()).unwrap();
+        dbg!(unsafe { *(ptr as *mut i32) });
         loop {}
     }
 
     #[test]
     fn client() {
         let rdma = Rdma::connect("127.0.0.1:5555").unwrap();
-        let rmr = rdma.alloc_remote_memory_region(Layout::new::<[i32; 4]>());
-        drop(rmr);
+        let rmr = rdma.alloc_remote_memory_region(Layout::new::<i32>());
+        let lmr = rdma.alloc_memory_region(Layout::new::<i32>()).unwrap();
+        unsafe { *(lmr.addr() as *mut i32) = 1 };
+        rdma.write(&lmr, &rmr).unwrap();
+        bincode::serialize_into(rdma.normal.unwrap(), &(rmr.addr() as usize));
         loop {}
     }
 }
