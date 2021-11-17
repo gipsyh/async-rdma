@@ -12,6 +12,7 @@ mod protection_domain;
 mod queue_pair;
 mod rdma_box;
 mod resource;
+mod stream_channel;
 
 pub use agent::*;
 pub use completion_queue::*;
@@ -23,6 +24,7 @@ pub use protection_domain::*;
 pub use queue_pair::*;
 pub use rdma_box::*;
 pub use resource::*;
+pub use stream_channel::*;
 
 use rdma_sys::ibv_access_flags;
 use std::{
