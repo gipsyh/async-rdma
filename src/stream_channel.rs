@@ -13,7 +13,7 @@ pub struct StreamChannel {
 }
 
 impl StreamChannel {
-    fn new() -> (Self, Self) {
+    pub fn new() -> (Self, Self) {
         let (ls, rr) = channel();
         let (rs, lr) = channel();
         let l = Self {
@@ -39,10 +39,10 @@ impl StreamChannel {
 
 impl Read for StreamChannel {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.reader.is_none() {
+        if self.reader.is_none() || self.reader.as_ref().unwrap().is_empty() {
             self.reader = Some(Cursor::new(self.receiver.recv().unwrap()));
         }
-        Ok(io::copy(self.reader.as_mut().unwrap(), &mut buf.borrow_mut())? as usize)
+        self.reader.as_mut().unwrap().read(buf)
     }
 }
 
@@ -53,6 +53,9 @@ impl Write for StreamChannel {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if self.writer.is_empty() {
+            return Ok(());
+        }
         let send = self.writer.to_owned();
         self.writer = vec![];
         self.sender
@@ -72,8 +75,18 @@ mod tests {
         let send = vec![1, 2, 3, 4];
         l.write(&send);
         l.flush();
-        let mut recv = vec![0; 4];
-        r.read(recv.as_mut());
-        assert_eq!(recv, vec![1, 2, 3, 4]);
+        let send = vec![5, 6, 7, 8];
+        l.write(&send);
+        l.flush();
+        let mut recv = vec![0; 2];
+        r.read_exact(recv.as_mut());
+        assert_eq!(recv, vec![1, 2]);
+        r.read_exact(recv.as_mut());
+        assert_eq!(recv, vec![3, 4]);
+        r.read_exact(recv.as_mut());
+        assert_eq!(recv, vec![5, 6]);
+        r.read_exact(recv.as_mut());
+        assert_eq!(recv, vec![7, 8]);
+        r.read_exact(recv.as_mut());
     }
 }
