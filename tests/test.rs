@@ -1,4 +1,4 @@
-use rust_libibverbs::{QueuePairEndpoint, Rdma, RdmaBuilder, RdmaLocalBox, RdmaRemoteBox};
+use async_rdma::{QueuePairEndpoint, Rdma, RdmaBuilder, RdmaLocalBox, RdmaRemoteBox};
 use std::{
     io,
     net::{TcpStream, ToSocketAddrs},
