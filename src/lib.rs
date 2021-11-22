@@ -5,7 +5,7 @@
     bool_to_option,
     cursor_remaining
 )]
-#![allow(unused)]
+#![allow(dead_code)]
 
 mod agent;
 mod completion_queue;
@@ -36,7 +36,7 @@ use rdma_sys::ibv_access_flags;
 use std::{
     alloc::Layout,
     io,
-    net::{TcpListener, TcpStream, ToSocketAddrs},
+    net::{TcpListener, ToSocketAddrs},
     sync::Arc,
 };
 
@@ -193,7 +193,7 @@ impl RdmaListener {
     }
 
     pub fn accept(&self) -> io::Result<Rdma> {
-        let (tcp_stream, socket_addr) = self.tcp_listener.accept()?;
+        let (tcp_stream, _socket_addr) = self.tcp_listener.accept()?;
         let mut rdma = RdmaBuilder::default().build()?;
         let remote: QueuePairEndpoint = bincode::deserialize_from(&tcp_stream).unwrap();
         bincode::serialize_into(&tcp_stream, &rdma.endpoint()).unwrap();
@@ -232,10 +232,10 @@ pub trait SizedLayout {
     fn layout() -> Layout;
 }
 
+#[cfg(tests)]
 mod tests {
-    use std::{alloc::Layout, io::Write, net::TcpListener};
-
-    use crate::{Rdma, RdmaListener, RdmaMemory};
+    use crate::{Rdma, RdmaListener};
+    use std::alloc::Layout;
 
     #[test]
     fn server() {

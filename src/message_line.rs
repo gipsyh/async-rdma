@@ -1,7 +1,6 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::BorrowMut,
     collections::HashMap,
     io::{Read, Write},
     net::TcpStream,
@@ -23,8 +22,8 @@ fn message_line_read_listener_main(
     loop {
         let header: MessageHeader = bincode::deserialize_from(&stream).unwrap();
         let mut vec = vec![0_u8; header.length];
-        stream.read_exact(vec.as_mut());
-        let channel_stream = table
+        stream.read_exact(vec.as_mut()).unwrap();
+        let _channel_stream = table
             .get_mut(&header.endpoint)
             .unwrap()
             .write_data_in_vec(vec);
@@ -52,7 +51,7 @@ impl Write for MessageStream {
             length: buf.len(),
         };
         let mut tcp_stream = self.tcp_stream.lock().unwrap();
-        bincode::serialize_into(&*tcp_stream, &header);
+        bincode::serialize_into(&*tcp_stream, &header).unwrap();
         tcp_stream.write_all(buf)?;
         Ok(buf.len())
     }
@@ -67,12 +66,12 @@ pub struct MessageLine {
 }
 
 impl MessageLine {
-    pub fn new(mut stream: TcpStream) -> (Self, MessageStream, MessageStream, MessageStream) {
+    pub fn new(stream: TcpStream) -> (Self, MessageStream, MessageStream, MessageStream) {
         let w_stream = Arc::new(Mutex::new(stream.try_clone().unwrap()));
         let mut table = HashMap::new();
-        let (mut agent_client_l, mut agent_client_r) = StreamChannel::new();
-        let (mut agent_server_l, mut agent_server_r) = StreamChannel::new();
-        let (mut normal_l, mut normal_r) = StreamChannel::new();
+        let (agent_client_l, agent_client_r) = StreamChannel::new();
+        let (agent_server_l, agent_server_r) = StreamChannel::new();
+        let (normal_l, normal_r) = StreamChannel::new();
         table.insert(1, agent_client_r);
         table.insert(2, agent_server_r);
         table.insert(3, normal_r);

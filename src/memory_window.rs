@@ -25,7 +25,7 @@ mod tests {
     fn test_create() -> io::Result<()> {
         let ctx = Arc::new(Context::open(None)?);
         let pd = Arc::new(ctx.create_protection_domain()?);
-        let mw = MemoryWindow::create(&pd)?;
+        let _mw = MemoryWindow::create(&pd)?;
         dbg!(io::Error::last_os_error());
         Ok(())
     }

@@ -1,14 +1,10 @@
 use crate::*;
-use bincode::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
-    hash::Hash,
-    net::{TcpListener, TcpStream, ToSocketAddrs},
-    os::unix::{net::Incoming, prelude::JoinHandleExt},
+    collections::HashMap,
+    net::ToSocketAddrs,
     sync::{Arc, Mutex},
     thread::{spawn, JoinHandle},
-    time::SystemTime,
 };
 use tokio::time::{sleep, Duration};
 
@@ -66,9 +62,9 @@ async fn alloc_memory_region(
     let token = mr.remote_token();
     let response = AllocMRResponse { mr_token: token };
     own.insert(token, mr);
-    let ans = Response::AllocMR(response);
-    memory_region_timeout(token, Duration::from_secs(1), own);
-    ans
+    Response::AllocMR(response)
+    // memory_region_timeout(token, Duration::from_secs(1), own);
+    // ans
 }
 
 fn release_memory_region(
@@ -112,7 +108,7 @@ impl AgentServer {
         Self { handle }
     }
 
-    pub fn transfer_mr(&mut self, mr: Arc<MemoryRegion>) {
+    pub fn transfer_mr(&mut self, _mr: Arc<MemoryRegion>) {
         todo!()
     }
 }
@@ -128,7 +124,7 @@ impl AgentClient {
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> Self {
+    pub fn connect<A: ToSocketAddrs>(_addr: A) -> Self {
         todo!()
     }
 
@@ -152,7 +148,7 @@ impl AgentClient {
     }
 
     pub fn release_mr(self: &Arc<Self>, mr_token: MemoryRegionRemoteToken) {
-        let request = ReleaseMRRequest { mr_token };
+        let _request = ReleaseMRRequest { mr_token };
     }
 }
 

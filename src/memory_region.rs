@@ -225,7 +225,7 @@ impl Drop for MemoryRegion {
     fn drop(&mut self) {
         assert_eq!(self.sub.lock().unwrap().len(), 0);
         match &self.kind {
-            Kind::LocalRoot(root) => {
+            Kind::LocalRoot(_root) => {
                 let errno = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr()) };
                 assert_eq!(errno, 0);
             }
@@ -269,8 +269,8 @@ mod tests {
         let sub = mr.slice(0..64).unwrap();
         assert_eq!(mr.addr(), sub.addr());
         assert_eq!(sub.length(), 64);
-        let sub = mr.slice(0..64).err().unwrap();
-        let sub = mr.slice(64..128).unwrap();
+        let _sub = mr.slice(0..64).err().unwrap();
+        let _sub = mr.slice(64..128).unwrap();
         Ok(())
     }
 
@@ -286,8 +286,8 @@ mod tests {
             Arc::new(pd.alloc_memory_region(Layout::from_size_align(128, 8).unwrap(), access)?);
         let sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
         drop(sub);
-        let sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
-        let sub = mr
+        let _sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
+        let _sub = mr
             .alloc(Layout::from_size_align(128, 8).unwrap())
             .err()
             .unwrap();
