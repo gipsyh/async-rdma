@@ -18,7 +18,6 @@ mod message_line;
 mod protection_domain;
 mod queue_pair;
 mod rdma_box;
-mod resource;
 
 pub use agent::*;
 pub use completion_queue::*;
@@ -30,7 +29,6 @@ pub use message_line::*;
 pub use protection_domain::*;
 pub use queue_pair::*;
 pub use rdma_box::*;
-pub use resource::*;
 
 use rdma_sys::ibv_access_flags;
 use std::{
@@ -232,9 +230,9 @@ pub trait SizedLayout {
     fn layout() -> Layout;
 }
 
-#[cfg(tests)]
+#[cfg(test)]
 mod tests {
-    use crate::{Rdma, RdmaListener};
+    use crate::{Rdma, RdmaListener, RdmaMemory};
     use std::alloc::Layout;
 
     #[test]
@@ -253,7 +251,7 @@ mod tests {
         let lmr = rdma.alloc_memory_region(Layout::new::<i32>()).unwrap();
         unsafe { *(lmr.addr() as *mut i32) = 1 };
         rdma.write(&lmr, &rmr).unwrap();
-        bincode::serialize_into(rdma.normal.unwrap(), &(rmr.addr() as usize));
+        bincode::serialize_into(rdma.normal.unwrap(), &(rmr.addr() as usize)).unwrap();
         loop {}
     }
 }

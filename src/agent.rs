@@ -43,10 +43,10 @@ enum Response {
     ReleaseMR(ReleaseMRResponse),
 }
 
-async fn alloc_memory_region(
+fn alloc_memory_region(
     pd: &Arc<ProtectionDomain>,
     request: AllocMRRequest,
-    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
 ) -> Response {
     let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
         | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
@@ -61,41 +61,49 @@ async fn alloc_memory_region(
     );
     let token = mr.remote_token();
     let response = AllocMRResponse { mr_token: token };
-    own.insert(token, mr);
+    own.lock().unwrap().insert(token, mr);
+    tokio::spawn(resource_guard(token, Duration::from_secs(1), own));
     Response::AllocMR(response)
-    // memory_region_timeout(token, Duration::from_secs(1), own);
-    // ans
 }
 
 fn release_memory_region(
     request: ReleaseMRRequest,
-    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
 ) -> Response {
-    own.remove(&request.mr_token);
+    own.lock().unwrap().remove(&request.mr_token);
     Response::ReleaseMR(ReleaseMRResponse { status: 0 })
 }
 
 async fn memory_region_timeout(
     token: MemoryRegionRemoteToken,
     duration: Duration,
-    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
 ) {
     sleep(duration).await;
-    own.remove(&token);
+    own.lock().unwrap().remove(&token);
 }
 
 #[tokio::main]
 async fn agent_main(mut stream: MessageStream, pd: Arc<ProtectionDomain>) {
-    let mut own = HashMap::new();
+    let own = Arc::new(Mutex::new(HashMap::new()));
     loop {
         let request: Request = bincode::deserialize_from(&mut stream).unwrap();
         let response = match request {
-            Request::AllocMR(request) => alloc_memory_region(&pd, request, &mut own).await,
+            Request::AllocMR(request) => alloc_memory_region(&pd, request, own.clone()),
             Request::ReceiveMR => todo!(),
-            Request::ReleaseMR(request) => release_memory_region(request, &mut own),
+            Request::ReleaseMR(request) => release_memory_region(request, own.clone()),
         };
         bincode::serialize_into(&mut stream, &response).unwrap();
     }
+}
+
+async fn resource_guard(
+    token: MemoryRegionRemoteToken,
+    duration: Duration,
+    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
+) {
+    tokio::time::sleep(duration).await;
+    own.lock().unwrap().remove(&token);
 }
 
 pub struct AgentServer {
