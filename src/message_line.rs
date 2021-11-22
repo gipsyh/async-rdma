@@ -8,6 +8,7 @@ use std::{
     sync::Mutex,
     thread::{spawn, JoinHandle},
 };
+use stream_channel::StreamChannel;
 
 #[derive(Serialize, Deserialize)]
 struct MessageHeader {

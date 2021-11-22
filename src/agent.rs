@@ -1,7 +1,6 @@
+use crate::*;
 use bincode::Deserializer;
 use serde::{Deserialize, Serialize};
-
-use crate::*;
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
@@ -11,6 +10,7 @@ use std::{
     thread::{spawn, JoinHandle},
     time::SystemTime,
 };
+use tokio::time::{sleep, Duration};
 
 #[derive(Serialize, Deserialize)]
 struct AllocMRRequest {
@@ -47,7 +47,7 @@ enum Response {
     ReleaseMR(ReleaseMRResponse),
 }
 
-fn alloc_memory_region(
+async fn alloc_memory_region(
     pd: &Arc<ProtectionDomain>,
     request: AllocMRRequest,
     own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
@@ -63,11 +63,12 @@ fn alloc_memory_region(
         )
         .unwrap(),
     );
-    let response = AllocMRResponse {
-        mr_token: mr.remote_token(),
-    };
-    own.insert(mr.remote_token(), mr);
-    Response::AllocMR(response)
+    let token = mr.remote_token();
+    let response = AllocMRResponse { mr_token: token };
+    own.insert(token, mr);
+    let ans = Response::AllocMR(response);
+    memory_region_timeout(token, Duration::from_secs(1), own);
+    ans
 }
 
 fn release_memory_region(
@@ -78,12 +79,22 @@ fn release_memory_region(
     Response::ReleaseMR(ReleaseMRResponse { status: 0 })
 }
 
-fn agent_main(mut stream: MessageStream, pd: Arc<ProtectionDomain>) {
+async fn memory_region_timeout(
+    token: MemoryRegionRemoteToken,
+    duration: Duration,
+    own: &mut HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>,
+) {
+    sleep(duration).await;
+    own.remove(&token);
+}
+
+#[tokio::main]
+async fn agent_main(mut stream: MessageStream, pd: Arc<ProtectionDomain>) {
     let mut own = HashMap::new();
     loop {
         let request: Request = bincode::deserialize_from(&mut stream).unwrap();
         let response = match request {
-            Request::AllocMR(request) => alloc_memory_region(&pd, request, &mut own),
+            Request::AllocMR(request) => alloc_memory_region(&pd, request, &mut own).await,
             Request::ReceiveMR => todo!(),
             Request::ReleaseMR(request) => release_memory_region(request, &mut own),
         };
