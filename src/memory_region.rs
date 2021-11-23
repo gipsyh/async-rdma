@@ -184,7 +184,7 @@ impl RdmaLocalMemory for MemoryRegion {
         let data = vec![0_u8; layout.size()];
         let inner_mr = unsafe {
             rdma_sys::ibv_reg_mr(
-                pd.inner_pd,
+                pd.as_ptr(),
                 data.as_ptr() as *mut _,
                 data.len(),
                 access.0 as i32,

@@ -1,10 +1,15 @@
 use crate::*;
 use rdma_sys::{
-    ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send,
+    ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
     ibv_send_wr, ibv_sge, ibv_wr_opcode,
 };
-use std::{fmt::Debug, io, ptr, sync::Arc};
+use std::{
+    fmt::Debug,
+    io,
+    ptr::{self, NonNull},
+    sync::Arc,
+};
 
 struct QueuePairInitAttr {
     qp_init_attr_inner: rdma_sys::ibv_qp_init_attr,
@@ -67,15 +72,13 @@ impl QueuePairBuilder {
     }
 
     pub fn build(&mut self) -> io::Result<QueuePair> {
-        let inner_qp = unsafe {
+        let inner_qp = NonNull::new(unsafe {
             rdma_sys::ibv_create_qp(
-                self.pd.inner_pd,
+                self.pd.as_ptr(),
                 &mut self.qp_init_attr.qp_init_attr_inner as *mut _,
             )
-        };
-        if inner_qp.is_null() {
-            return Err(io::Error::last_os_error());
-        }
+        })
+        .ok_or(io::ErrorKind::Other)?;
         Ok(QueuePair {
             pd: self.pd.clone(),
             cq: self.cq.as_ref().unwrap().clone(),
@@ -85,7 +88,6 @@ impl QueuePairBuilder {
 
     pub fn set_cq(&mut self, cq: &Arc<CompletionQueue>) -> &mut Self {
         self.cq = Some(cq.clone());
-
         self.qp_init_attr.qp_init_attr_inner.send_cq = cq.as_ptr();
         self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.as_ptr();
         self
@@ -102,13 +104,17 @@ pub struct QueuePairEndpoint {
 pub struct QueuePair {
     pd: Arc<ProtectionDomain>,
     cq: Arc<CompletionQueue>,
-    inner_qp: *mut rdma_sys::ibv_qp,
+    inner_qp: NonNull<ibv_qp>,
 }
 
 impl QueuePair {
+    pub(crate) fn as_ptr(&self) -> *mut ibv_qp {
+        self.inner_qp.as_ptr()
+    }
+
     pub fn endpoint(&self) -> QueuePairEndpoint {
         QueuePairEndpoint {
-            qp_num: unsafe { (*self.inner_qp).qp_num },
+            qp_num: unsafe { (*self.as_ptr()).qp_num },
             lid: self.pd.ctx.get_lid(),
             gid: self.pd.ctx.gid,
         }
@@ -124,7 +130,7 @@ impl QueuePair {
             | ibv_qp_attr_mask::IBV_QP_STATE
             | ibv_qp_attr_mask::IBV_QP_PORT
             | ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
-        let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
+        let errno = unsafe { ibv_modify_qp(self.as_ptr(), &mut attr, flags.0 as _) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -159,7 +165,7 @@ impl QueuePair {
             | ibv_qp_attr_mask::IBV_QP_RQ_PSN
             | ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
             | ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
-        let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
+        let errno = unsafe { ibv_modify_qp(self.as_ptr(), &mut attr, flags.0 as _) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -187,7 +193,7 @@ impl QueuePair {
             | ibv_qp_attr_mask::IBV_QP_RNR_RETRY
             | ibv_qp_attr_mask::IBV_QP_SQ_PSN
             | ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
-        let errno = unsafe { ibv_modify_qp(self.inner_qp, &mut attr, flags.0 as _) };
+        let errno = unsafe { ibv_modify_qp(self.as_ptr(), &mut attr, flags.0 as _) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -208,7 +214,7 @@ impl QueuePair {
         sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
         self.cq.req_notify(false).unwrap();
-        let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -231,7 +237,7 @@ impl QueuePair {
         rr.wr_id = 0;
         rr.sg_list = &mut sge;
         rr.num_sge = 1;
-        let errno = unsafe { ibv_post_recv(self.inner_qp, &mut rr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_recv(self.as_ptr(), &mut rr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -258,7 +264,7 @@ impl QueuePair {
         sr.wr.rdma.remote_addr = remote.addr() as u64;
         sr.wr.rdma.rkey = remote.rkey();
         self.cq.req_notify(false).unwrap();
-        let errno = unsafe { ibv_post_send(self.inner_qp, &mut sr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -284,7 +290,7 @@ impl QueuePair {
 
 impl Drop for QueuePair {
     fn drop(&mut self) {
-        let errno = unsafe { ibv_destroy_qp(self.inner_qp) };
+        let errno = unsafe { ibv_destroy_qp(self.as_ptr()) };
         assert_eq!(errno, 0);
     }
 }

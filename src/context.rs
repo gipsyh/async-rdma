@@ -1,14 +1,18 @@
 use crate::*;
-use rdma_sys::ibv_get_device_name;
-use std::{ffi::CStr, io, sync::Arc};
+use rdma_sys::{ibv_context, ibv_get_device_name};
+use std::{ffi::CStr, io, ptr::NonNull, sync::Arc};
 
 pub struct Context {
-    pub(super) inner_ctx: *mut rdma_sys::ibv_context,
+    pub(super) inner_ctx: NonNull<ibv_context>,
     pub(super) inner_port_attr: rdma_sys::ibv_port_attr,
     pub(super) gid: Gid,
 }
 
 impl Context {
+    pub(crate) fn as_ptr(&self) -> *mut ibv_context {
+        self.inner_ctx.as_ptr()
+    }
+
     pub fn open(dev_name: Option<&str>) -> io::Result<Self> {
         let mut num_devs: i32 = 0;
         let dev_list_ptr = unsafe { rdma_sys::ibv_get_device_list(&mut num_devs as *mut _) };
@@ -29,18 +33,17 @@ impl Context {
         } else {
             dev_list.get(0).ok_or(io::ErrorKind::NotFound)?
         };
-        let inner_ctx = unsafe { rdma_sys::ibv_open_device(*dev) };
-        if inner_ctx.is_null() {
-            return Err(io::Error::last_os_error());
-        }
+        let inner_ctx = NonNull::new(unsafe { rdma_sys::ibv_open_device(*dev) })
+            .ok_or_else(io::Error::last_os_error)?;
         unsafe { rdma_sys::ibv_free_device_list(dev_list_ptr) };
         let mut gid = Gid::default();
-        let errno = unsafe { rdma_sys::ibv_query_gid(inner_ctx, 1, 0, gid.as_mut()) };
+        let errno = unsafe { rdma_sys::ibv_query_gid(inner_ctx.as_ptr(), 1, 0, gid.as_mut()) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
         let mut inner_port_attr = unsafe { std::mem::zeroed() };
-        let errno = unsafe { rdma_sys::___ibv_query_port(inner_ctx, 1, &mut inner_port_attr) };
+        let errno =
+            unsafe { rdma_sys::___ibv_query_port(inner_ctx.as_ptr(), 1, &mut inner_port_attr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -78,7 +81,7 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
-        let errno = unsafe { rdma_sys::ibv_close_device(self.inner_ctx) };
+        let errno = unsafe { rdma_sys::ibv_close_device(self.as_ptr()) };
         assert_eq!(errno, 0);
     }
 }

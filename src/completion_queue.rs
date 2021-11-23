@@ -15,12 +15,12 @@ pub struct CompletionQueue {
 impl CompletionQueue {
     pub fn create(ctx: &Context, cq_size: u32, ec: Option<&Arc<EventChannel>>) -> io::Result<Self> {
         let ec_inner = match ec {
-            Some(ec) => ec.as_mut_ptr(),
+            Some(ec) => ec.as_ptr(),
             _ => ptr::null::<c_void>() as *mut _,
         };
         let inner_cq = NonNull::new(unsafe {
             ibv_create_cq(
-                ctx.inner_ctx,
+                ctx.as_ptr(),
                 cq_size as i32,
                 std::ptr::null_mut(),
                 ec_inner,
