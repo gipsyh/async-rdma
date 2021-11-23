@@ -159,6 +159,3 @@ impl AgentClient {
         let _request = ReleaseMRRequest { mr_token };
     }
 }
-
-#[test]
-fn test() {}

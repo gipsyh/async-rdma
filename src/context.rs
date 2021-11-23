@@ -52,14 +52,7 @@ impl Context {
     }
 
     pub fn create_event_channel(self: &Arc<Self>) -> io::Result<EventChannel> {
-        let inner_ec = unsafe { rdma_sys::ibv_create_comp_channel(self.inner_ctx) };
-        if inner_ec.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(EventChannel {
-            ctx: self.clone(),
-            inner_ec,
-        })
+        EventChannel::new(self.clone())
     }
 
     pub fn create_completion_queue(

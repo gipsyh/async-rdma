@@ -85,8 +85,9 @@ impl QueuePairBuilder {
 
     pub fn set_cq(&mut self, cq: &Arc<CompletionQueue>) -> &mut Self {
         self.cq = Some(cq.clone());
-        self.qp_init_attr.qp_init_attr_inner.send_cq = cq.inner_cq;
-        self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.inner_cq;
+
+        self.qp_init_attr.qp_init_attr_inner.send_cq = cq.as_ptr();
+        self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.as_ptr();
         self
     }
 }
