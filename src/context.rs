@@ -3,9 +3,9 @@ use rdma_sys::{ibv_context, ibv_get_device_name};
 use std::{ffi::CStr, io, ptr::NonNull, sync::Arc};
 
 pub struct Context {
-    pub(super) inner_ctx: NonNull<ibv_context>,
-    pub(super) inner_port_attr: rdma_sys::ibv_port_attr,
-    pub(super) gid: Gid,
+    pub inner_ctx: NonNull<ibv_context>,
+    pub inner_port_attr: rdma_sys::ibv_port_attr,
+    pub gid: Gid,
 }
 
 impl Context {

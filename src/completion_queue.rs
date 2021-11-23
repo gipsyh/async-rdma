@@ -2,6 +2,7 @@ use crate::{context::Context, event_channel::EventChannel};
 use libc::c_void;
 use rdma_sys::{ibv_cq, ibv_create_cq, ibv_destroy_cq, ibv_poll_cq, ibv_req_notify_cq, ibv_wc};
 use std::{
+    cmp::Ordering,
     io, mem,
     ptr::{self, NonNull},
     sync::Arc,
@@ -13,6 +14,10 @@ pub struct CompletionQueue {
 }
 
 impl CompletionQueue {
+    pub(crate) fn as_ptr(&self) -> *mut ibv_cq {
+        self.inner_cq.as_ptr()
+    }
+
     pub fn create(ctx: &Context, cq_size: u32, ec: Option<&Arc<EventChannel>>) -> io::Result<Self> {
         let ec_inner = match ec {
             Some(ec) => ec.as_ptr(),
@@ -51,22 +56,19 @@ impl CompletionQueue {
         for _ in 0..num_entries {
             ans.push(WorkCompletion::default());
         }
-        match unsafe { ibv_poll_cq(self.as_ptr(), num_entries as _, ans.as_mut_ptr() as _) } {
-            ret if ret >= 0 => {
-                let ret = ret as usize;
-                for _ in ret..num_entries as usize {
-                    ans.remove(ret);
+        let poll_res =
+            unsafe { ibv_poll_cq(self.as_ptr(), num_entries as _, ans.as_mut_ptr() as _) };
+        match poll_res.cmp(&0) {
+            Ordering::Greater | Ordering::Equal => {
+                let poll_res = poll_res as usize;
+                for _ in poll_res..num_entries as usize {
+                    ans.remove(poll_res);
                 }
-                assert_eq!(ans.len(), ret);
+                assert_eq!(ans.len(), poll_res);
                 Ok(ans)
             }
-            ret if ret < 0 => Err(io::Error::new(io::ErrorKind::Other, "")),
-            _ => panic!(),
+            Ordering::Less => Err(io::Error::new(io::ErrorKind::Other, "")),
         }
-    }
-
-    pub(crate) fn as_ptr(&self) -> *mut ibv_cq {
-        self.inner_cq.as_ptr()
     }
 }
 

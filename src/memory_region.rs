@@ -1,10 +1,11 @@
 use crate::*;
-use rdma_sys::ibv_access_flags;
+use rdma_sys::{ibv_access_flags, ibv_mr};
 use serde::{Deserialize, Serialize};
 use std::{
     alloc::Layout,
     io,
     ops::Range,
+    ptr::NonNull,
     sync::{Arc, Mutex},
 };
 
@@ -14,7 +15,7 @@ struct Node {
 }
 
 struct LocalRoot {
-    inner_mr: *mut rdma_sys::ibv_mr,
+    inner_mr: NonNull<ibv_mr>,
     _pd: Arc<ProtectionDomain>,
     data: Vec<u8>,
 }
@@ -96,17 +97,17 @@ impl MemoryRegion {
         }
     }
 
-    pub(super) fn inner_mr(&self) -> *mut rdma_sys::ibv_mr {
+    pub(crate) fn inner_mr(&self) -> *mut rdma_sys::ibv_mr {
         if let Kind::LocalRoot(lroot) = &self.kind {
-            lroot.inner_mr
+            lroot.inner_mr.as_ptr()
         } else {
             panic!()
         }
     }
 
-    pub fn slice(self: &mut Arc<Self>, range: Range<usize>) -> Result<MemoryRegion, ()> {
+    pub fn slice(self: &mut Arc<Self>, range: Range<usize>) -> Result<MemoryRegion, String> {
         if range.start >= range.end || range.end > self.length {
-            return Err(());
+            return Err("Invalid Range".to_string());
         }
         if !self
             .sub
@@ -115,7 +116,7 @@ impl MemoryRegion {
             .iter()
             .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
         {
-            return Err(());
+            return Err("No Enough Memory".to_string());
         }
         self.sub.lock().unwrap().push(range.clone());
         self.sub
@@ -140,10 +141,10 @@ impl MemoryRegion {
         })
     }
 
-    pub fn alloc(self: &mut Arc<Self>, layout: Layout) -> Result<MemoryRegion, ()> {
+    pub fn alloc(self: &mut Arc<Self>, layout: Layout) -> Result<MemoryRegion, String> {
         let range = {
             let mut last = 0;
-            let mut ans = Err(());
+            let mut ans = Err("No Enough Memory");
             for range in self.sub.lock().unwrap().iter() {
                 if last + layout.size() <= range.start {
                     ans = Ok(last..last + layout.size());
@@ -182,21 +183,19 @@ impl RdmaLocalMemory for MemoryRegion {
         Self: Sized,
     {
         let data = vec![0_u8; layout.size()];
-        let inner_mr = unsafe {
+        let inner_mr = NonNull::new(unsafe {
             rdma_sys::ibv_reg_mr(
                 pd.as_ptr(),
                 data.as_ptr() as *mut _,
                 data.len(),
                 access.0 as i32,
             )
-        };
-        if inner_mr.is_null() {
-            return Err(io::Error::last_os_error());
-        }
+        })
+        .ok_or_else(io::Error::last_os_error)?;
         Ok(MemoryRegion {
             addr: data.as_ptr() as _,
             length: data.len(),
-            key: unsafe { *inner_mr }.lkey,
+            key: unsafe { *inner_mr.as_ptr() }.lkey,
             kind: Kind::LocalRoot(LocalRoot {
                 inner_mr,
                 _pd: pd.clone(),
