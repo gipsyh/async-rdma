@@ -1,6 +1,5 @@
-use rdma_sys::ibv_pd;
-
-use crate::*;
+use crate::{Context, MemoryRegion, QueuePairBuilder, RdmaLocalMemory};
+use rdma_sys::{ibv_access_flags, ibv_alloc_pd, ibv_dealloc_pd, ibv_pd};
 use std::{alloc::Layout, io, ptr::NonNull, sync::Arc};
 
 pub struct ProtectionDomain {
@@ -14,8 +13,8 @@ impl ProtectionDomain {
     }
 
     pub fn create(ctx: &Arc<Context>) -> io::Result<Self> {
-        let inner_pd = NonNull::new(unsafe { rdma_sys::ibv_alloc_pd(ctx.as_ptr()) })
-            .ok_or(io::ErrorKind::Other)?;
+        let inner_pd =
+            NonNull::new(unsafe { ibv_alloc_pd(ctx.as_ptr()) }).ok_or(io::ErrorKind::Other)?;
         Ok(Self {
             ctx: ctx.clone(),
             inner_pd,
@@ -29,7 +28,7 @@ impl ProtectionDomain {
     pub fn alloc_memory_region(
         self: &Arc<Self>,
         layout: Layout,
-        access: rdma_sys::ibv_access_flags,
+        access: ibv_access_flags,
     ) -> io::Result<MemoryRegion> {
         MemoryRegion::new_from_pd(self, layout, access)
     }
@@ -37,7 +36,7 @@ impl ProtectionDomain {
 
 impl Drop for ProtectionDomain {
     fn drop(&mut self) {
-        let errno = unsafe { rdma_sys::ibv_dealloc_pd(self.as_ptr()) };
+        let errno = unsafe { ibv_dealloc_pd(self.as_ptr()) };
         assert_eq!(errno, 0);
     }
 }

@@ -21,20 +21,22 @@ impl CompletionQueue {
     pub fn create(ctx: &Context, cq_size: u32, ec: Option<&Arc<EventChannel>>) -> io::Result<Self> {
         let ec_inner = match ec {
             Some(ec) => ec.as_ptr(),
-            _ => ptr::null::<c_void>() as *mut _,
+            _ => ptr::null::<c_void>() as _,
         };
         let inner_cq = NonNull::new(unsafe {
             ibv_create_cq(
                 ctx.as_ptr(),
-                cq_size as i32,
+                cq_size as _,
                 std::ptr::null_mut(),
                 ec_inner,
                 0,
             )
         })
         .ok_or(io::ErrorKind::Other)?;
-        let ec = ec.cloned();
-        Ok(CompletionQueue { ec, inner_cq })
+        Ok(CompletionQueue {
+            ec: ec.cloned(),
+            inner_cq,
+        })
     }
 
     pub fn req_notify(&self, solicited_only: bool) -> io::Result<()> {
@@ -44,7 +46,7 @@ impl CompletionQueue {
                 "no event channel".to_string(),
             ));
         }
-        let errno = unsafe { ibv_req_notify_cq(self.inner_cq.as_ptr(), solicited_only as i32) };
+        let errno = unsafe { ibv_req_notify_cq(self.inner_cq.as_ptr(), solicited_only as _) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -52,16 +54,13 @@ impl CompletionQueue {
     }
 
     pub fn poll(&self, num_entries: u32) -> io::Result<Vec<WorkCompletion>> {
-        let mut ans = Vec::new();
-        for _ in 0..num_entries {
-            ans.push(WorkCompletion::default());
-        }
+        let mut ans = vec![WorkCompletion::default(); num_entries as _];
         let poll_res =
             unsafe { ibv_poll_cq(self.as_ptr(), num_entries as _, ans.as_mut_ptr() as _) };
         match poll_res.cmp(&0) {
             Ordering::Greater | Ordering::Equal => {
-                let poll_res = poll_res as usize;
-                for _ in poll_res..num_entries as usize {
+                let poll_res = poll_res as _;
+                for _ in poll_res..num_entries as _ {
                     ans.remove(poll_res);
                 }
                 assert_eq!(ans.len(), poll_res);
@@ -86,14 +85,14 @@ pub struct WorkCompletion {
 
 impl WorkCompletion {
     pub(crate) fn as_ptr(&self) -> *mut ibv_wc {
-        todo!()
+        &self.inner_wc as *const _ as _
     }
 }
 
 impl Default for WorkCompletion {
     fn default() -> Self {
         Self {
-            inner_wc: unsafe { mem::zeroed::<ibv_wc>() },
+            inner_wc: unsafe { mem::zeroed() },
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::*;
-use rdma_sys::{ibv_access_flags, ibv_mr};
+use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
     alloc::Layout,
@@ -97,7 +97,7 @@ impl MemoryRegion {
         }
     }
 
-    pub(crate) fn inner_mr(&self) -> *mut rdma_sys::ibv_mr {
+    pub(crate) fn inner_mr(&self) -> *mut ibv_mr {
         if let Kind::LocalRoot(lroot) = &self.kind {
             lroot.inner_mr.as_ptr()
         } else {
@@ -184,12 +184,7 @@ impl RdmaLocalMemory for MemoryRegion {
     {
         let data = vec![0_u8; layout.size()];
         let inner_mr = NonNull::new(unsafe {
-            rdma_sys::ibv_reg_mr(
-                pd.as_ptr(),
-                data.as_ptr() as *mut _,
-                data.len(),
-                access.0 as i32,
-            )
+            ibv_reg_mr(pd.as_ptr(), data.as_ptr() as _, data.len(), access.0 as _)
         })
         .ok_or_else(io::Error::last_os_error)?;
         Ok(MemoryRegion {
@@ -225,7 +220,7 @@ impl Drop for MemoryRegion {
         assert_eq!(self.sub.lock().unwrap().len(), 0);
         match &self.kind {
             Kind::LocalRoot(_root) => {
-                let errno = unsafe { rdma_sys::ibv_dereg_mr(self.inner_mr()) };
+                let errno = unsafe { ibv_dereg_mr(self.inner_mr()) };
                 assert_eq!(errno, 0);
             }
             Kind::LocalNode(node) | Kind::RemoteNode(node) => {

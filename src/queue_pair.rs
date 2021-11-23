@@ -4,6 +4,7 @@ use rdma_sys::{
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
     ibv_send_wr, ibv_sge, ibv_wr_opcode,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::Debug,
     io,
@@ -18,10 +19,10 @@ struct QueuePairInitAttr {
 impl Default for QueuePairInitAttr {
     fn default() -> Self {
         let mut qp_init_attr = unsafe { std::mem::zeroed::<ibv_qp_init_attr>() };
-        qp_init_attr.qp_context = ptr::null::<libc::c_void>() as *mut _;
-        qp_init_attr.send_cq = ptr::null::<ibv_cq>() as *mut _;
-        qp_init_attr.recv_cq = ptr::null::<ibv_cq>() as *mut _;
-        qp_init_attr.srq = ptr::null::<ibv_cq>() as *mut _;
+        qp_init_attr.qp_context = ptr::null::<libc::c_void>() as _;
+        qp_init_attr.send_cq = ptr::null::<ibv_cq>() as _;
+        qp_init_attr.recv_cq = ptr::null::<ibv_cq>() as _;
+        qp_init_attr.srq = ptr::null::<ibv_cq>() as _;
         qp_init_attr.cap.max_send_wr = 10;
         qp_init_attr.cap.max_recv_wr = 10;
         qp_init_attr.cap.max_send_sge = 10;
@@ -94,7 +95,7 @@ impl QueuePairBuilder {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, serde::Serialize, serde:: Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct QueuePairEndpoint {
     qp_num: u32,
     lid: u16,

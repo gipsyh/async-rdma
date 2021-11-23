@@ -1,5 +1,5 @@
 use crate::Context;
-use rdma_sys::ibv_comp_channel;
+use rdma_sys::{ibv_comp_channel, ibv_create_comp_channel, ibv_destroy_comp_channel};
 use std::{io, ptr::NonNull, sync::Arc};
 
 pub struct EventChannel {
@@ -13,7 +13,7 @@ impl EventChannel {
     }
 
     pub fn new(ctx: Arc<Context>) -> io::Result<Self> {
-        let inner_ec = NonNull::new(unsafe { rdma_sys::ibv_create_comp_channel(ctx.as_ptr()) })
+        let inner_ec = NonNull::new(unsafe { ibv_create_comp_channel(ctx.as_ptr()) })
             .ok_or(io::ErrorKind::Other)?;
         Ok(Self { ctx, inner_ec })
     }
@@ -21,7 +21,7 @@ impl EventChannel {
 
 impl Drop for EventChannel {
     fn drop(&mut self) {
-        let errno = unsafe { rdma_sys::ibv_destroy_comp_channel(self.as_ptr()) };
+        let errno = unsafe { ibv_destroy_comp_channel(self.as_ptr()) };
         assert_eq!(errno, 0);
     }
 }

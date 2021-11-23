@@ -1,10 +1,13 @@
 use crate::*;
-use rdma_sys::{ibv_context, ibv_get_device_name};
+use rdma_sys::{
+    ibv_close_device, ibv_context, ibv_free_device_list, ibv_get_device_list, ibv_get_device_name,
+    ibv_open_device, ibv_port_attr, ibv_query_gid,
+};
 use std::{ffi::CStr, io, ptr::NonNull, sync::Arc};
 
 pub struct Context {
     pub inner_ctx: NonNull<ibv_context>,
-    pub inner_port_attr: rdma_sys::ibv_port_attr,
+    pub inner_port_attr: ibv_port_attr,
     pub gid: Gid,
 }
 
@@ -15,7 +18,7 @@ impl Context {
 
     pub fn open(dev_name: Option<&str>) -> io::Result<Self> {
         let mut num_devs: i32 = 0;
-        let dev_list_ptr = unsafe { rdma_sys::ibv_get_device_list(&mut num_devs as *mut _) };
+        let dev_list_ptr = unsafe { ibv_get_device_list(&mut num_devs as *mut _) };
         if dev_list_ptr.is_null() {
             return Err(io::Error::last_os_error());
         }
@@ -33,11 +36,11 @@ impl Context {
         } else {
             dev_list.get(0).ok_or(io::ErrorKind::NotFound)?
         };
-        let inner_ctx = NonNull::new(unsafe { rdma_sys::ibv_open_device(*dev) })
-            .ok_or_else(io::Error::last_os_error)?;
-        unsafe { rdma_sys::ibv_free_device_list(dev_list_ptr) };
+        let inner_ctx =
+            NonNull::new(unsafe { ibv_open_device(*dev) }).ok_or_else(io::Error::last_os_error)?;
+        unsafe { ibv_free_device_list(dev_list_ptr) };
         let mut gid = Gid::default();
-        let errno = unsafe { rdma_sys::ibv_query_gid(inner_ctx.as_ptr(), 1, 0, gid.as_mut()) };
+        let errno = unsafe { ibv_query_gid(inner_ctx.as_ptr(), 1, 0, gid.as_mut()) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -81,7 +84,7 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
-        let errno = unsafe { rdma_sys::ibv_close_device(self.as_ptr()) };
+        let errno = unsafe { ibv_close_device(self.as_ptr()) };
         assert_eq!(errno, 0);
     }
 }
