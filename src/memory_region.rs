@@ -8,6 +8,7 @@ use std::{
     ptr::NonNull,
     sync::{Arc, Mutex},
 };
+use tokio::runtime::Runtime;
 
 struct Node {
     fa: Arc<MemoryRegion>,
@@ -237,7 +238,9 @@ impl Drop for MemoryRegion {
                 node.fa.sub.lock().unwrap().remove(index);
             }
             Kind::RemoteRoot(root) => {
-                root.agent.release_mr(root.token);
+                Runtime::new()
+                    .unwrap()
+                    .block_on(root.agent.release_mr(root.token));
             }
         }
     }

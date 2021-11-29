@@ -1,8 +1,9 @@
 use crate::*;
+use async_bincode::{AsyncBincodeStream, AsyncDestination};
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    net::ToSocketAddrs,
     sync::{Arc, Mutex},
     thread::{spawn, JoinHandle},
 };
@@ -84,16 +85,17 @@ async fn memory_region_timeout(
 }
 
 #[tokio::main]
-async fn agent_main(mut stream: MessageStream, pd: Arc<ProtectionDomain>) {
+async fn agent_main(endp: MStreamEndPoint, pd: Arc<ProtectionDomain>) {
+    let mut endp = AsyncBincodeStream::<_, Request, Response, _>::from(endp).for_async();
     let own = Arc::new(Mutex::new(HashMap::new()));
     loop {
-        let request: Request = bincode::deserialize_from(&mut stream).unwrap();
+        let request = endp.next().await.unwrap().unwrap();
         let response = match request {
             Request::AllocMR(request) => alloc_memory_region(&pd, request, own.clone()),
             Request::ReceiveMR => todo!(),
             Request::ReleaseMR(request) => release_memory_region(request, own.clone()),
         };
-        bincode::serialize_into(&mut stream, &response).unwrap();
+        endp.send(response).await.unwrap();
     }
 }
 
@@ -111,8 +113,8 @@ pub struct AgentServer {
 }
 
 impl AgentServer {
-    pub fn new(stream: MessageStream, pd: Arc<ProtectionDomain>) -> Self {
-        let handle = spawn(move || agent_main(stream, pd));
+    pub fn new(endp: MStreamEndPoint, pd: Arc<ProtectionDomain>) -> Self {
+        let handle = spawn(move || agent_main(endp, pd));
         Self { handle }
     }
 
@@ -122,28 +124,23 @@ impl AgentServer {
 }
 
 pub struct AgentClient {
-    stream: Mutex<MessageStream>,
+    endp: Mutex<AsyncBincodeStream<MStreamEndPoint, Response, Request, AsyncDestination>>,
 }
 
 impl AgentClient {
-    pub fn new(stream: MessageStream) -> Self {
+    pub fn new(endp: MStreamEndPoint) -> Self {
         Self {
-            stream: Mutex::new(stream),
+            endp: Mutex::new(AsyncBincodeStream::<_, Response, Request, _>::from(endp).for_async()),
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(_addr: A) -> Self {
-        todo!()
-    }
-
-    pub fn alloc_mr(self: &Arc<Self>, layout: Layout) -> MemoryRegion {
+    pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> MemoryRegion {
         let request = Request::AllocMR(AllocMRRequest {
             size: layout.size(),
             align: layout.align(),
         });
-        let mut stream = self.stream.lock().unwrap();
-        bincode::serialize_into(&mut *stream, &request).unwrap();
-        let response: Response = bincode::deserialize_from(&mut *stream).unwrap();
+        self.endp.lock().unwrap().send(request).await.unwrap();
+        let response = self.endp.lock().unwrap().next().await.unwrap().unwrap();
         if let Response::AllocMR(response) = response {
             MemoryRegion::from_remote_token(response.mr_token, self.clone())
         } else {
@@ -151,11 +148,11 @@ impl AgentClient {
         }
     }
 
-    pub fn receive_mr() -> MemoryRegion {
+    pub async fn receive_mr() -> MemoryRegion {
         todo!()
     }
 
-    pub fn release_mr(self: &Arc<Self>, mr_token: MemoryRegionRemoteToken) {
+    pub async fn release_mr(self: &Arc<Self>, mr_token: MemoryRegionRemoteToken) {
         let _request = ReleaseMRRequest { mr_token };
     }
 }
