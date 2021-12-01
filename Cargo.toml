@@ -16,3 +16,5 @@ stream-channel = { path = "../stream-channel" }
 multiplex-stream = { path = "../multiplex-stream" }
 async-bincode = "0.6.1"
 futures = "0.3.18"
+lockfree-cuckoohash = {git = "https://github.com/GTwhy/lockfree-cuckoohash"}
+rand = "0.8"
