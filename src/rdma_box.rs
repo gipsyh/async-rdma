@@ -86,9 +86,9 @@ pub struct RdmaRemoteBox {
 }
 
 impl RdmaRemoteBox {
-    pub fn get<T: Copy>(&self, rdma: &Rdma) -> T {
+    pub async fn get<T: Copy>(&self, rdma: &Rdma) -> T {
         let mut local: RdmaLocalBox<T> = RdmaLocalBox::new_with_zerod(&rdma.pd);
-        rdma.read(&mut local, self).unwrap();
+        rdma.read(&mut local, self).await.unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
         *local
     }

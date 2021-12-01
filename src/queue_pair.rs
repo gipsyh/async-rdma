@@ -245,7 +245,7 @@ impl QueuePair {
         Ok(data)
     }
 
-    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32) -> io::Result<()>
+    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32, wr_id: u64) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
@@ -257,7 +257,7 @@ impl QueuePair {
         sge.length = local.length() as u32;
         sge.lkey = local.lkey();
         sr.next = std::ptr::null_mut();
-        sr.wr_id = 0;
+        sr.wr_id = wr_id;
         sr.sg_list = &mut sge;
         sr.num_sge = 1;
         sr.opcode = opcode;
@@ -272,20 +272,20 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
+    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM, wr_id: u64) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ)
+        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
     }
 
-    pub fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
+    pub fn write<LM, RM>(&self, local: &LM, remote: &RM, wr_id: u64) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE)
+        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
     }
 }
 

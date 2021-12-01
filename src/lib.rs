@@ -11,6 +11,7 @@ mod agent;
 mod completion_queue;
 mod context;
 mod event_channel;
+mod event_listener;
 mod gid;
 mod memory_region;
 mod memory_window;
@@ -22,6 +23,7 @@ pub use agent::*;
 pub use completion_queue::*;
 pub use context::*;
 pub use event_channel::*;
+use event_listener::EventListener;
 pub use gid::*;
 pub use memory_region::*;
 use multiplex_stream::{EndPointId, MStream, MStreamEndPoint};
@@ -79,6 +81,7 @@ pub struct Rdma {
     agent_server: Option<Arc<AgentServer>>,
     agent_client: Option<Arc<AgentClient>>,
     pub normal: Option<MStreamEndPoint>,
+    event_listener: Arc<EventListener>,
 }
 
 impl Rdma {
@@ -90,6 +93,7 @@ impl Rdma {
         let mut qpb = pd.create_queue_pair_builder();
         let qp = Arc::new(qpb.set_cq(&cq).build()?);
         qp.modify_to_init(access)?;
+        let event_listener = Arc::new(EventListener::new(ec.clone(), cq.clone()));
         Ok(Self {
             ctx,
             ec,
@@ -99,6 +103,7 @@ impl Rdma {
             agent_server: None,
             agent_client: None,
             normal: None,
+            event_listener,
         })
     }
 
@@ -120,20 +125,26 @@ impl Rdma {
         self.qp.post_receive()
     }
 
-    pub fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
+    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        self.qp.write(local, remote)
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let res = self.qp.write(local, remote, wr_id);
+        resp_rx.recv().await;
+        res
     }
 
-    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
+    pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        self.qp.read(local, remote)
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let res = self.qp.read(local, remote, wr_id);
+        resp_rx.recv().await;
+        res    
     }
 
     fn set_agent_client(&mut self, endp: MStreamEndPoint) {
@@ -213,9 +224,12 @@ impl RdmaListener {
         dbg!(remote.len());
         stream.read_exact(remote.as_mut()).await?;
         let remote: QueuePairEndpoint = bincode::deserialize(&remote).unwrap();
+        println!("handshake done");
         let local = bincode::serialize(&rdma.endpoint()).unwrap();
+        println!("handshake done");
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
+        println!("handshake done");
         let mstream = MStream::new(stream);
         let client = async {
             let mut client = mstream.new_endpoint(EndPointId(1)).await.unwrap();

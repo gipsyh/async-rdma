@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Clone)]
 pub struct CompletionQueue {
     ec: Option<Arc<EventChannel>>,
     inner_cq: NonNull<ibv_cq>,
@@ -70,6 +71,9 @@ impl CompletionQueue {
         }
     }
 }
+
+unsafe impl Sync for CompletionQueue {}
+unsafe impl Send for CompletionQueue {}
 
 impl Drop for CompletionQueue {
     fn drop(&mut self) {

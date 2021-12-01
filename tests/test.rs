@@ -66,7 +66,7 @@ mod test2 {
     fn server(rdma: Rdma, stream: TcpStream) -> io::Result<()> {
         let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
         let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
-        rdma.qp.write(&local_box, &remote_box)
+        rdma.qp.write(&local_box, &remote_box, 0)
     }
 
     fn client(rdma: Rdma, stream: TcpStream) -> io::Result<()> {
@@ -86,10 +86,10 @@ mod test2 {
 mod test3 {
     use crate::*;
 
-    fn server(rdma: Rdma, stream: TcpStream) -> io::Result<()> {
+    async fn server(rdma: Rdma, stream: TcpStream) -> io::Result<()> {
         let mut local_box = RdmaLocalBox::new(&rdma.pd, [0, 0, 0, 0]);
         let remote_box: RdmaRemoteBox = bincode::deserialize_from(&stream).unwrap();
-        rdma.read(&mut local_box, &remote_box)?;
+        rdma.read(&mut local_box, &remote_box).await?;
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert_eq!(*local_box, [1, 2, 3, 4]);
         Ok(())
