@@ -1,9 +1,8 @@
 use crate::Context;
 use rdma_sys::{ibv_comp_channel, ibv_create_comp_channel, ibv_destroy_comp_channel};
-use std::{io, ptr::NonNull, sync::Arc};
 use std::os::unix::prelude::{AsRawFd, RawFd};
+use std::{io, ptr::NonNull, sync::Arc};
 
-#[derive(Clone)]
 pub struct EventChannel {
     pub ctx: Arc<Context>,
     pub inner_ec: NonNull<ibv_comp_channel>,
@@ -19,7 +18,9 @@ impl EventChannel {
         Ok(Self { ctx, inner_ec })
     }
 }
+
 unsafe impl Sync for EventChannel {}
+
 unsafe impl Send for EventChannel {}
 
 impl Drop for EventChannel {
@@ -30,8 +31,7 @@ impl Drop for EventChannel {
 }
 
 impl AsRawFd for EventChannel {
-    #[inline]
     fn as_raw_fd(&self) -> RawFd {
-       unsafe { (*self.inner_ec.as_ptr()).fd.as_raw_fd() } 
+        unsafe { (*self.inner_ec.as_ptr()).fd.as_raw_fd() }
     }
 }

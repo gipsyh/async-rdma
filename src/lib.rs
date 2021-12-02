@@ -74,30 +74,26 @@ impl Default for RdmaBuilder {
 #[allow(dead_code)]
 pub struct Rdma {
     ctx: Arc<Context>,
-    ec: Arc<EventChannel>,
-    cq: Arc<CompletionQueue>,
     pub pd: Arc<ProtectionDomain>,
     pub qp: Arc<QueuePair>,
     agent_server: Option<Arc<AgentServer>>,
     agent_client: Option<Arc<AgentClient>>,
     pub normal: Option<MStreamEndPoint>,
-    event_listener: Arc<EventListener>,
+    event_listener: EventListener,
 }
 
 impl Rdma {
     pub fn new(dev_name: Option<&str>, access: ibv_access_flags, cq_size: u32) -> io::Result<Self> {
         let ctx = Arc::new(Context::open(dev_name)?);
-        let ec = Arc::new(ctx.create_event_channel()?);
-        let cq = Arc::new(ctx.create_completion_queue(cq_size, Some(&ec))?);
+        let ec = ctx.create_event_channel()?;
+        let cq = Arc::new(ctx.create_completion_queue(cq_size, Some(ec))?);
         let pd = Arc::new(ctx.create_protection_domain()?);
         let mut qpb = pd.create_queue_pair_builder();
         let qp = Arc::new(qpb.set_cq(&cq).build()?);
         qp.modify_to_init(access)?;
-        let event_listener = Arc::new(EventListener::new(ec.clone(), cq.clone()));
+        let event_listener = EventListener::new(cq);
         Ok(Self {
             ctx,
-            ec,
-            cq,
             pd,
             qp,
             agent_server: None,
@@ -144,7 +140,7 @@ impl Rdma {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         let res = self.qp.read(local, remote, wr_id);
         resp_rx.recv().await;
-        res    
+        res
     }
 
     fn set_agent_client(&mut self, endp: MStreamEndPoint) {

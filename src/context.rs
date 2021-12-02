@@ -64,7 +64,7 @@ impl Context {
     pub fn create_completion_queue(
         &self,
         cq_size: u32,
-        event_channel: Option<&Arc<EventChannel>>,
+        event_channel: Option<EventChannel>,
     ) -> io::Result<CompletionQueue> {
         CompletionQueue::create(self, cq_size, event_channel)
     }

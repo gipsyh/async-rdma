@@ -5,12 +5,10 @@ use std::{
     cmp::Ordering,
     io, mem,
     ptr::{self, NonNull},
-    sync::Arc,
 };
 
-#[derive(Clone)]
 pub struct CompletionQueue {
-    ec: Option<Arc<EventChannel>>,
+    ec: Option<EventChannel>,
     inner_cq: NonNull<ibv_cq>,
 }
 
@@ -19,8 +17,8 @@ impl CompletionQueue {
         self.inner_cq.as_ptr()
     }
 
-    pub fn create(ctx: &Context, cq_size: u32, ec: Option<&Arc<EventChannel>>) -> io::Result<Self> {
-        let ec_inner = match ec {
+    pub fn create(ctx: &Context, cq_size: u32, ec: Option<EventChannel>) -> io::Result<Self> {
+        let ec_inner = match &ec {
             Some(ec) => ec.as_ptr(),
             _ => ptr::null::<c_void>() as _,
         };
@@ -34,10 +32,7 @@ impl CompletionQueue {
             )
         })
         .ok_or(io::ErrorKind::Other)?;
-        Ok(CompletionQueue {
-            ec: ec.cloned(),
-            inner_cq,
-        })
+        Ok(CompletionQueue { ec, inner_cq })
     }
 
     pub fn req_notify(&self, solicited_only: bool) -> io::Result<()> {
@@ -70,9 +65,14 @@ impl CompletionQueue {
             Ordering::Less => Err(io::Error::new(io::ErrorKind::Other, "")),
         }
     }
+
+    pub(crate) fn event_channel(&self) -> &EventChannel {
+        self.ec.as_ref().unwrap()
+    }
 }
 
 unsafe impl Sync for CompletionQueue {}
+
 unsafe impl Send for CompletionQueue {}
 
 impl Drop for CompletionQueue {
