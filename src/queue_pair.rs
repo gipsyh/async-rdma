@@ -201,7 +201,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -209,7 +209,7 @@ impl QueuePair {
         sge.length = data.length() as u32;
         sge.lkey = data.lkey();
         sr.next = std::ptr::null_mut();
-        sr.wr_id = 0;
+        sr.wr_id = wr_id;
         sr.sg_list = &mut sge;
         sr.num_sge = 1;
         sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
@@ -222,27 +222,23 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
+    pub fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
-        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-        let data = LM::new_from_pd(&self.pd, LM::layout(), access)?;
         sge.addr = data.addr() as u64;
         sge.length = data.length() as u32;
         sge.lkey = data.lkey();
         rr.next = std::ptr::null_mut();
-        rr.wr_id = 0;
+        rr.wr_id = wr_id;
         rr.sg_list = &mut sge;
         rr.num_sge = 1;
+        self.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_recv(self.as_ptr(), &mut rr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
-        Ok(data)
+        Ok(())
     }
 
     fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32, wr_id: u64) -> io::Result<()>

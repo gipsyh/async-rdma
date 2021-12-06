@@ -101,11 +101,17 @@ impl Rdma {
     }
 
     pub async fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
-        self.qp.post_send(data)
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        self.qp.post_send(data, wr_id).unwrap();
+        resp_rx.recv().await.unwrap().unwrap();
+        Ok(())
     }
 
-    pub async fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
-        self.qp.post_receive()
+    pub async fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        self.qp.post_receive(data, wr_id).unwrap();
+        resp_rx.recv().await.unwrap().unwrap();
+        Ok(())
     }
 
     pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
