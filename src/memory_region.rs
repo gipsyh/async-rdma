@@ -80,11 +80,16 @@ impl MemoryRegion {
         MemoryRegion::new_from_pd(pd, layout, access)
     }
 
-    pub fn remote_token(&self) -> MemoryRegionRemoteToken {
-        MemoryRegionRemoteToken {
-            addr: self.addr() as _,
-            length: self.length(),
-            rkey: unsafe { *self.inner_mr() }.rkey,
+    pub fn token(&self) -> MemoryRegionRemoteToken {
+        match &self.kind {
+            Kind::LocalRoot(_) => MemoryRegionRemoteToken {
+                addr: self.addr() as _,
+                length: self.length(),
+                rkey: unsafe { *self.inner_mr() }.rkey,
+            },
+            Kind::LocalNode(_) => todo!(),
+            Kind::RemoteRoot(root) => root.token,
+            Kind::RemoteNode(_) => todo!(),
         }
     }
 

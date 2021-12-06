@@ -1,14 +1,16 @@
-use std::io;
+use std::{io, pin::Pin};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
 
-pub struct RdmaStream {}
+pub struct RdmaStream {
+    stream: TcpStream,
+}
 
 impl RdmaStream {
     pub fn new(stream: TcpStream) -> Self {
-        todo!()
+        Self { stream }
     }
 }
 
@@ -18,7 +20,7 @@ impl AsyncRead for RdmaStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        todo!()
+        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
     }
 }
 
@@ -28,20 +30,20 @@ impl AsyncWrite for RdmaStream {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, io::Error>> {
-        todo!()
+        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
     }
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), io::Error>> {
-        todo!()
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), io::Error>> {
-        todo!()
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
     }
 }

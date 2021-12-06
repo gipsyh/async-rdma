@@ -1,52 +1,116 @@
-use crate::{rdma_stream::RdmaStream, MemoryRegion, MemoryRegionRemoteToken};
+use crate::{rdma_stream::RdmaStream, MemoryRegion, MemoryRegionRemoteToken, ProtectionDomain};
 use async_bincode::{AsyncBincodeStream, AsyncDestination};
-use futures::stream::{SplitSink, SplitStream, StreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream, StreamExt},
+    SinkExt,
+};
+use rand::Rng;
+use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
 use std::{alloc::Layout, collections::HashMap, io, sync::Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::{oneshot, Mutex},
+    io::AsyncReadExt,
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        oneshot, Mutex,
+    },
     task::JoinHandle,
 };
 
 pub struct Agent {
     stream_write: Arc<Mutex<StreamWrite<RdmaStream>>>,
     response_waits: Arc<Mutex<ResponseWaitsMap>>,
-    listen_main_handle: JoinHandle<io::Result<()>>,
+    mr_own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
+    mr_recv: Mutex<Receiver<io::Result<Arc<MemoryRegion>>>>,
+    handle: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl Agent {
-    pub fn new(stream: RdmaStream) -> Self {
+    pub fn new(stream: RdmaStream, pd: Arc<ProtectionDomain>) -> Arc<Self> {
         let stream = AsyncBincodeStream::<_, Message, Message, _>::from(stream).for_async();
         let (stream_write, stream_read) = stream.split();
         let stream_write = Arc::new(Mutex::new(stream_write));
         let response_waits = Arc::new(Mutex::new(HashMap::new()));
-        let listen_main_handle = tokio::spawn(listen_main(
-            stream_read,
-            stream_write.clone(),
-            response_waits.clone(),
-        ));
-        Self {
-            listen_main_handle,
+        let mr_own = Arc::new(Mutex::new(HashMap::new()));
+        let (mr_send, mr_recv) = channel(1024);
+        let mr_recv = Mutex::new(mr_recv);
+        let ans = Arc::new(Self {
+            handle: None,
             stream_write,
+            mr_own,
             response_waits,
+            mr_recv,
+        });
+        let _handle = tokio::spawn(listen_main(ans.clone(), stream_read, pd, mr_send));
+        // ans.handle = Some(handle);
+        ans
+    }
+
+    pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> io::Result<MemoryRegion> {
+        let request = AllocMRRequest {
+            size: layout.size(),
+            align: layout.align(),
+        };
+        let request = Request {
+            request_id: RequestId::new(),
+            kind: RequestKind::AllocMR(request),
+        };
+        let (send, recv) = oneshot::channel();
+        self.response_waits
+            .lock()
+            .await
+            .insert(request.request_id, send);
+        self.stream_write
+            .lock()
+            .await
+            .send(Message::Request(request))
+            .await
+            .unwrap();
+        let response = recv.await.unwrap();
+        let response = response.unwrap();
+        if let ResponseKind::AllocMR(response) = response {
+            Ok(MemoryRegion::from_remote_token(
+                response.token,
+                self.clone(),
+            ))
+        } else {
+            panic!()
         }
     }
 
-    pub async fn alloc_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
+    pub async fn release_mr(&self, _token: MemoryRegionRemoteToken) -> io::Result<()> {
         todo!()
     }
 
-    pub async fn release_mr(&self, token: MemoryRegionRemoteToken) -> io::Result<()> {
-        todo!()
+    pub async fn send_mr(&self, mr: Arc<MemoryRegion>) -> io::Result<()> {
+        let request = if mr.is_local() {
+            let ans = SendMRKind::Local(mr.token());
+            self.mr_own.lock().await.insert(mr.token(), mr);
+            ans
+        } else {
+            SendMRKind::Remote(mr.token())
+        };
+        let request = Request {
+            request_id: RequestId::new(),
+            kind: RequestKind::SendMR(SendMRRequest { kind: request }),
+        };
+        let (send, recv) = oneshot::channel();
+        self.response_waits
+            .lock()
+            .await
+            .insert(request.request_id, send);
+        self.stream_write
+            .lock()
+            .await
+            .send(Message::Request(request))
+            .await
+            .unwrap();
+        let _response = recv.await.unwrap().unwrap();
+        Ok(())
     }
 
-    pub async fn send_mr(&self, mr: &MemoryRegion) -> io::Result<()> {
-        todo!()
-    }
-
-    pub async fn receive_mr(&self) -> io::Result<MemoryRegion> {
-        todo!()
+    pub async fn receive_mr(&self) -> io::Result<Arc<MemoryRegion>> {
+        self.mr_recv.lock().await.recv().await.unwrap()
     }
 
     pub async fn post_send(&self) -> io::Result<()> {
@@ -64,10 +128,16 @@ type StreamRead<SR> = SplitStream<Stream<SR>>;
 
 type StreamWrite<SW> = SplitSink<Stream<SW>, Message>;
 
-type ResponseWaitsMap = HashMap<RequestId, oneshot::Sender<io::Result<()>>>;
+type ResponseWaitsMap = HashMap<RequestId, oneshot::Sender<io::Result<ResponseKind>>>;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct RequestId(usize);
+
+impl RequestId {
+    fn new() -> Self {
+        Self(rand::thread_rng().gen())
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct AllocMRRequest {
@@ -77,12 +147,12 @@ struct AllocMRRequest {
 
 #[derive(Serialize, Deserialize)]
 struct AllocMRResponse {
-    mr_token: MemoryRegionRemoteToken,
+    token: MemoryRegionRemoteToken,
 }
 
 #[derive(Serialize, Deserialize)]
 struct ReleaseMRRequest {
-    mr_token: MemoryRegionRemoteToken,
+    token: MemoryRegionRemoteToken,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,10 +161,33 @@ struct ReleaseMRResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+enum SendMRKind {
+    Local(MemoryRegionRemoteToken),
+    Remote(MemoryRegionRemoteToken),
+}
+
+#[derive(Serialize, Deserialize)]
+struct SendMRRequest {
+    kind: SendMRKind,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SendMRResponse {}
+
+#[derive(Serialize, Deserialize)]
+struct ReceiveMRRequest {}
+
+#[derive(Serialize, Deserialize)]
+struct ReceiveMRResponse {}
+
+#[derive(Serialize, Deserialize)]
 enum RequestKind {
     AllocMR(AllocMRRequest),
-    ReceiveMR,
     ReleaseMR(ReleaseMRRequest),
+    SendMR(SendMRRequest),
+    ReceiveMR,
+    SendData,
+    ReceiveData,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,9 +199,9 @@ struct Request {
 #[derive(Serialize, Deserialize)]
 enum ResponseKind {
     AllocMR(AllocMRResponse),
-    ReceiveMR,
-    SendMR,
     ReleaseMR(ReleaseMRResponse),
+    SendMR(SendMRResponse),
+    ReceiveMR,
     SendData,
     ReceiveData,
 }
@@ -125,35 +218,97 @@ enum Message {
     Response(Response),
 }
 
-async fn handle_request<SW: AsyncWriteExt + Unpin + Send>(
+async fn handle_request(
+    agent: Arc<Agent>,
     request: Request,
-    stream_write: Arc<Mutex<StreamWrite<SW>>>,
+    pd: Arc<ProtectionDomain>,
+    mr_send: Sender<io::Result<Arc<MemoryRegion>>>,
 ) {
-    todo!()
+    let response = match request.kind {
+        RequestKind::AllocMR(param) => {
+            let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                | ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+            let mr = Arc::new(
+                pd.alloc_memory_region(
+                    Layout::from_size_align(param.size, param.align).unwrap(),
+                    access,
+                )
+                .unwrap(),
+            );
+            let token = mr.token();
+            let response = AllocMRResponse { token };
+            agent.mr_own.lock().await.insert(token, mr);
+            ResponseKind::AllocMR(response)
+        }
+        RequestKind::ReleaseMR(_) => todo!(),
+        RequestKind::SendMR(param) => {
+            match param.kind {
+                SendMRKind::Local(token) => {
+                    assert!(mr_send
+                        .send(Ok(Arc::new(MemoryRegion::from_remote_token(
+                            token,
+                            agent.clone()
+                        ))))
+                        .await
+                        .is_ok());
+                }
+                SendMRKind::Remote(token) => {
+                    let mr = agent.mr_own.lock().await.remove(&token).unwrap();
+                    assert!(mr_send.send(Ok(mr)).await.is_ok());
+                }
+            }
+            ResponseKind::SendMR(SendMRResponse {})
+        }
+        RequestKind::ReceiveMR => todo!(),
+        RequestKind::SendData => todo!(),
+        RequestKind::ReceiveData => todo!(),
+    };
+    let response = Response {
+        request_id: request.request_id,
+        kind: response,
+    };
+    agent
+        .stream_write
+        .lock()
+        .await
+        .send(Message::Response(response))
+        .await
+        .unwrap();
 }
 
 async fn handle_response(response: Response, response_waits: Arc<Mutex<ResponseWaitsMap>>) {
-    let a = response_waits
+    let sender = response_waits
         .lock()
         .await
         .remove(&response.request_id)
         .unwrap();
-    todo!()
+    match sender.send(Ok(response.kind)) {
+        Ok(_) => (),
+        Err(_) => todo!(),
+    }
 }
 
-async fn listen_main<SR: AsyncReadExt + Unpin, SW: AsyncWriteExt + Unpin + Send + 'static>(
+async fn listen_main<SR: AsyncReadExt + Unpin>(
+    agent: Arc<Agent>,
     mut stream_read: StreamRead<SR>,
-    stream_write: Arc<Mutex<StreamWrite<SW>>>,
-    response_waits: Arc<Mutex<ResponseWaitsMap>>,
+    pd: Arc<ProtectionDomain>,
+    mr_send: Sender<io::Result<Arc<MemoryRegion>>>,
 ) -> io::Result<()> {
     loop {
         let message = stream_read.next().await.unwrap().unwrap();
         match message {
             Message::Request(request) => {
-                tokio::spawn(handle_request(request, stream_write.clone()));
+                tokio::spawn(handle_request(
+                    agent.clone(),
+                    request,
+                    pd.clone(),
+                    mr_send.clone(),
+                ));
             }
             Message::Response(response) => {
-                tokio::spawn(handle_response(response, response_waits.clone()));
+                tokio::spawn(handle_response(response, agent.response_waits.clone()));
             }
         }
     }

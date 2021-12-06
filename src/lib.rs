@@ -148,8 +148,8 @@ impl Rdma {
         let remote: QueuePairEndpoint = bincode::deserialize(&endpoint).unwrap();
         rdma.handshake(remote)?;
         let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream);
-        rdma.agent = Some(Arc::new(agent));
+        let agent = Agent::new(stream, rdma.pd.clone());
+        rdma.agent = Some(agent);
         Ok(rdma)
     }
 
@@ -169,12 +169,20 @@ impl Rdma {
         }
     }
 
-    pub async fn send_mr(&self, mr: &MemoryRegion) -> io::Result<()> {
-        todo!()
+    pub async fn send_mr(&self, mr: Arc<MemoryRegion>) -> io::Result<()> {
+        if let Some(agent) = &self.agent {
+            agent.send_mr(mr).await
+        } else {
+            panic!();
+        }
     }
 
-    pub async fn receive_mr(&self) -> io::Result<MemoryRegion> {
-        todo!()
+    pub async fn receive_mr(&self) -> io::Result<Arc<MemoryRegion>> {
+        if let Some(agent) = &self.agent {
+            agent.receive_mr().await
+        } else {
+            panic!();
+        }
     }
 }
 
@@ -198,8 +206,8 @@ impl RdmaListener {
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
         let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream);
-        rdma.agent = Some(Arc::new(agent));
+        let agent = Agent::new(stream, rdma.pd.clone());
+        rdma.agent = Some(agent);
         Ok(rdma)
     }
 }
