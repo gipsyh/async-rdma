@@ -55,19 +55,7 @@ impl Agent {
             request_id: RequestId::new(),
             kind: RequestKind::AllocMR(request),
         };
-        let (send, recv) = oneshot::channel();
-        self.response_waits
-            .lock()
-            .await
-            .insert(request.request_id, send);
-        self.stream_write
-            .lock()
-            .await
-            .send(Message::Request(request))
-            .await
-            .unwrap();
-        let response = recv.await.unwrap();
-        let response = response.unwrap();
+        let response = self.send_request(request).await.unwrap();
         if let ResponseKind::AllocMR(response) = response {
             Ok(MemoryRegion::from_remote_token(
                 response.token,
@@ -78,8 +66,13 @@ impl Agent {
         }
     }
 
-    pub async fn release_mr(&self, _token: MemoryRegionRemoteToken) -> io::Result<()> {
-        todo!()
+    pub async fn release_mr(&self, token: MemoryRegionRemoteToken) -> io::Result<()> {
+        let request = Request {
+            request_id: RequestId::new(),
+            kind: RequestKind::ReleaseMR(ReleaseMRRequest { token }),
+        };
+        let _response = self.send_request(request).await.unwrap();
+        Ok(())
     }
 
     pub async fn send_mr(&self, mr: Arc<MemoryRegion>) -> io::Result<()> {
@@ -94,18 +87,7 @@ impl Agent {
             request_id: RequestId::new(),
             kind: RequestKind::SendMR(SendMRRequest { kind: request }),
         };
-        let (send, recv) = oneshot::channel();
-        self.response_waits
-            .lock()
-            .await
-            .insert(request.request_id, send);
-        self.stream_write
-            .lock()
-            .await
-            .send(Message::Request(request))
-            .await
-            .unwrap();
-        let _response = recv.await.unwrap().unwrap();
+        let _response = self.send_request(request).await.unwrap();
         Ok(())
     }
 
@@ -119,6 +101,21 @@ impl Agent {
 
     pub async fn post_receive(&self) -> io::Result<()> {
         todo!()
+    }
+
+    async fn send_request(&self, request: Request) -> io::Result<ResponseKind> {
+        let (send, recv) = oneshot::channel();
+        self.response_waits
+            .lock()
+            .await
+            .insert(request.request_id, send);
+        self.stream_write
+            .lock()
+            .await
+            .send(Message::Request(request))
+            .await
+            .unwrap();
+        recv.await.unwrap()
     }
 }
 
@@ -242,7 +239,10 @@ async fn handle_request(
             agent.mr_own.lock().await.insert(token, mr);
             ResponseKind::AllocMR(response)
         }
-        RequestKind::ReleaseMR(_) => todo!(),
+        RequestKind::ReleaseMR(param) => {
+            assert!(agent.mr_own.lock().await.remove(&param.token).is_some());
+            ResponseKind::ReleaseMR(ReleaseMRResponse { status: 0 })
+        }
         RequestKind::SendMR(param) => {
             match param.kind {
                 SendMRKind::Local(token) => {
@@ -255,7 +255,7 @@ async fn handle_request(
                         .is_ok());
                 }
                 SendMRKind::Remote(token) => {
-                    let mr = agent.mr_own.lock().await.remove(&token).unwrap();
+                    let mr = agent.mr_own.lock().await.get(&token).unwrap().clone();
                     assert!(mr_send.send(Ok(mr)).await.is_ok());
                 }
             }
