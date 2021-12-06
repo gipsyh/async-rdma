@@ -1,13 +1,73 @@
-use crate::*;
+use crate::{rdma_stream::RdmaStream, MemoryRegion, MemoryRegionRemoteToken};
 use async_bincode::{AsyncBincodeStream, AsyncDestination};
-use futures::{SinkExt, StreamExt};
+use futures::stream::{SplitSink, SplitStream, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    thread::{spawn, JoinHandle},
+use std::{alloc::Layout, collections::HashMap, io, sync::Arc};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{oneshot, Mutex},
+    task::JoinHandle,
 };
-use tokio::time::{sleep, Duration};
+
+pub struct Agent {
+    stream_write: Arc<Mutex<StreamWrite<RdmaStream>>>,
+    response_waits: Arc<Mutex<ResponseWaitsMap>>,
+    listen_main_handle: JoinHandle<io::Result<()>>,
+}
+
+impl Agent {
+    pub fn new(stream: RdmaStream) -> Self {
+        let stream = AsyncBincodeStream::<_, Message, Message, _>::from(stream).for_async();
+        let (stream_write, stream_read) = stream.split();
+        let stream_write = Arc::new(Mutex::new(stream_write));
+        let response_waits = Arc::new(Mutex::new(HashMap::new()));
+        let listen_main_handle = tokio::spawn(listen_main(
+            stream_read,
+            stream_write.clone(),
+            response_waits.clone(),
+        ));
+        Self {
+            listen_main_handle,
+            stream_write,
+            response_waits,
+        }
+    }
+
+    pub async fn alloc_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
+        todo!()
+    }
+
+    pub async fn release_mr(&self, token: MemoryRegionRemoteToken) -> io::Result<()> {
+        todo!()
+    }
+
+    pub async fn send_mr(&self, mr: &MemoryRegion) -> io::Result<()> {
+        todo!()
+    }
+
+    pub async fn receive_mr(&self) -> io::Result<MemoryRegion> {
+        todo!()
+    }
+
+    pub async fn post_send(&self) -> io::Result<()> {
+        todo!()
+    }
+
+    pub async fn post_receive(&self) -> io::Result<()> {
+        todo!()
+    }
+}
+
+type Stream<S> = AsyncBincodeStream<S, Message, Message, AsyncDestination>;
+
+type StreamRead<SR> = SplitStream<Stream<SR>>;
+
+type StreamWrite<SW> = SplitSink<Stream<SW>, Message>;
+
+type ResponseWaitsMap = HashMap<RequestId, oneshot::Sender<io::Result<()>>>;
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct RequestId(usize);
 
 #[derive(Serialize, Deserialize)]
 struct AllocMRRequest {
@@ -31,128 +91,70 @@ struct ReleaseMRResponse {
 }
 
 #[derive(Serialize, Deserialize)]
-enum Request {
+enum RequestKind {
     AllocMR(AllocMRRequest),
     ReceiveMR,
     ReleaseMR(ReleaseMRRequest),
 }
 
 #[derive(Serialize, Deserialize)]
-enum Response {
+struct Request {
+    request_id: RequestId,
+    kind: RequestKind,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ResponseKind {
     AllocMR(AllocMRResponse),
     ReceiveMR,
+    SendMR,
     ReleaseMR(ReleaseMRResponse),
+    SendData,
+    ReceiveData,
 }
 
-fn alloc_memory_region(
-    pd: &Arc<ProtectionDomain>,
-    request: AllocMRRequest,
-    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
-) -> Response {
-    let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-        | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-        | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-        | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-    let mr = Arc::new(
-        pd.alloc_memory_region(
-            Layout::from_size_align(request.size, request.align).unwrap(),
-            access,
-        )
-        .unwrap(),
-    );
-    let token = mr.remote_token();
-    let response = AllocMRResponse { mr_token: token };
-    own.lock().unwrap().insert(token, mr);
-    tokio::spawn(resource_guard(token, Duration::from_secs(1), own));
-    Response::AllocMR(response)
+#[derive(Serialize, Deserialize)]
+struct Response {
+    request_id: RequestId,
+    kind: ResponseKind,
 }
 
-fn release_memory_region(
-    request: ReleaseMRRequest,
-    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
-) -> Response {
-    own.lock().unwrap().remove(&request.mr_token);
-    Response::ReleaseMR(ReleaseMRResponse { status: 0 })
+#[derive(Serialize, Deserialize)]
+enum Message {
+    Request(Request),
+    Response(Response),
 }
 
-async fn memory_region_timeout(
-    token: MemoryRegionRemoteToken,
-    duration: Duration,
-    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
+async fn handle_request<SW: AsyncWriteExt + Unpin + Send>(
+    request: Request,
+    stream_write: Arc<Mutex<StreamWrite<SW>>>,
 ) {
-    sleep(duration).await;
-    own.lock().unwrap().remove(&token);
+    todo!()
 }
 
-#[tokio::main]
-async fn agent_main(endp: MStreamEndPoint, pd: Arc<ProtectionDomain>) {
-    let mut endp = AsyncBincodeStream::<_, Request, Response, _>::from(endp).for_async();
-    let own = Arc::new(Mutex::new(HashMap::new()));
+async fn handle_response(response: Response, response_waits: Arc<Mutex<ResponseWaitsMap>>) {
+    let a = response_waits
+        .lock()
+        .await
+        .remove(&response.request_id)
+        .unwrap();
+    todo!()
+}
+
+async fn listen_main<SR: AsyncReadExt + Unpin, SW: AsyncWriteExt + Unpin + Send + 'static>(
+    mut stream_read: StreamRead<SR>,
+    stream_write: Arc<Mutex<StreamWrite<SW>>>,
+    response_waits: Arc<Mutex<ResponseWaitsMap>>,
+) -> io::Result<()> {
     loop {
-        let request = endp.next().await.unwrap().unwrap();
-        let response = match request {
-            Request::AllocMR(request) => alloc_memory_region(&pd, request, own.clone()),
-            Request::ReceiveMR => todo!(),
-            Request::ReleaseMR(request) => release_memory_region(request, own.clone()),
-        };
-        endp.send(response).await.unwrap();
-    }
-}
-
-async fn resource_guard(
-    token: MemoryRegionRemoteToken,
-    duration: Duration,
-    own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
-) {
-    tokio::time::sleep(duration).await;
-    own.lock().unwrap().remove(&token);
-}
-
-pub struct AgentServer {
-    handle: JoinHandle<()>,
-}
-
-impl AgentServer {
-    pub fn new(endp: MStreamEndPoint, pd: Arc<ProtectionDomain>) -> Self {
-        let handle = spawn(move || agent_main(endp, pd));
-        Self { handle }
-    }
-
-    pub fn transfer_mr(&mut self, _mr: Arc<MemoryRegion>) {
-        todo!()
-    }
-}
-
-pub struct AgentClient {
-    endp: Mutex<AsyncBincodeStream<MStreamEndPoint, Response, Request, AsyncDestination>>,
-}
-
-impl AgentClient {
-    pub fn new(endp: MStreamEndPoint) -> Self {
-        Self {
-            endp: Mutex::new(AsyncBincodeStream::<_, Response, Request, _>::from(endp).for_async()),
+        let message = stream_read.next().await.unwrap().unwrap();
+        match message {
+            Message::Request(request) => {
+                tokio::spawn(handle_request(request, stream_write.clone()));
+            }
+            Message::Response(response) => {
+                tokio::spawn(handle_response(response, response_waits.clone()));
+            }
         }
-    }
-
-    pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> MemoryRegion {
-        let request = Request::AllocMR(AllocMRRequest {
-            size: layout.size(),
-            align: layout.align(),
-        });
-        self.endp.lock().unwrap().send(request).await.unwrap();
-        let response = self.endp.lock().unwrap().next().await.unwrap().unwrap();
-        if let Response::AllocMR(response) = response {
-            MemoryRegion::from_remote_token(response.mr_token, self.clone())
-        } else {
-            panic!();
-        }
-    }
-
-    pub async fn receive_mr() -> MemoryRegion {
-        todo!()
-    }
-
-    pub async fn release_mr(self: &Arc<Self>, mr_token: MemoryRegionRemoteToken) {
-        let _request = ReleaseMRRequest { mr_token };
     }
 }

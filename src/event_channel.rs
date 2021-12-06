@@ -32,6 +32,6 @@ impl Drop for EventChannel {
 
 impl AsRawFd for EventChannel {
     fn as_raw_fd(&self) -> RawFd {
-        unsafe { (*self.inner_ec.as_ptr()).fd.as_raw_fd() }
+        unsafe { *self.as_ptr() }.fd.as_raw_fd()
     }
 }

@@ -27,7 +27,7 @@ unsafe impl Sync for LocalRoot {}
 
 struct RemoteRoot {
     token: MemoryRegionRemoteToken,
-    agent: Arc<AgentClient>,
+    agent: Arc<Agent>,
 }
 
 enum Kind {
@@ -88,7 +88,7 @@ impl MemoryRegion {
         }
     }
 
-    pub fn from_remote_token(token: MemoryRegionRemoteToken, agent: Arc<AgentClient>) -> Self {
+    pub fn from_remote_token(token: MemoryRegionRemoteToken, agent: Arc<Agent>) -> Self {
         Self {
             addr: token.addr,
             length: token.length,
@@ -240,7 +240,8 @@ impl Drop for MemoryRegion {
             Kind::RemoteRoot(root) => {
                 Runtime::new()
                     .unwrap()
-                    .block_on(root.agent.release_mr(root.token));
+                    .block_on(root.agent.release_mr(root.token))
+                    .unwrap();
             }
         }
     }

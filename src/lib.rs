@@ -18,6 +18,7 @@ mod memory_window;
 mod protection_domain;
 mod queue_pair;
 mod rdma_box;
+mod rdma_stream;
 
 pub use agent::*;
 pub use completion_queue::*;
@@ -26,15 +27,14 @@ pub use event_channel::*;
 use event_listener::EventListener;
 pub use gid::*;
 pub use memory_region::*;
-use multiplex_stream::{EndPointId, MStream, MStreamEndPoint};
 pub use protection_domain::*;
 pub use queue_pair::*;
 pub use rdma_box::*;
+use rdma_stream::RdmaStream;
 use rdma_sys::ibv_access_flags;
 use std::{alloc::Layout, io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    join,
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
 
@@ -76,9 +76,7 @@ pub struct Rdma {
     ctx: Arc<Context>,
     pub pd: Arc<ProtectionDomain>,
     pub qp: Arc<QueuePair>,
-    agent_server: Option<Arc<AgentServer>>,
-    agent_client: Option<Arc<AgentClient>>,
-    pub normal: Option<MStreamEndPoint>,
+    agent: Option<Arc<Agent>>,
     event_listener: EventListener,
 }
 
@@ -96,10 +94,8 @@ impl Rdma {
             ctx,
             pd,
             qp,
-            agent_server: None,
-            agent_client: None,
-            normal: None,
             event_listener,
+            agent: None,
         })
     }
 
@@ -143,18 +139,6 @@ impl Rdma {
         res
     }
 
-    fn set_agent_client(&mut self, endp: MStreamEndPoint) {
-        self.agent_client = Some(Arc::new(AgentClient::new(endp)));
-    }
-
-    fn set_agent_server(&mut self, endp: MStreamEndPoint) {
-        self.agent_server = Some(Arc::new(AgentServer::new(endp, self.pd.clone())));
-    }
-
-    fn set_normal(&mut self, endp: MStreamEndPoint) {
-        self.normal = Some(endp);
-    }
-
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let mut rdma = RdmaBuilder::default().build()?;
         let mut stream = TcpStream::connect(addr).await?;
@@ -163,30 +147,13 @@ impl Rdma {
         stream.read_exact(endpoint.as_mut()).await?;
         let remote: QueuePairEndpoint = bincode::deserialize(&endpoint).unwrap();
         rdma.handshake(remote)?;
-        let mstream = MStream::new(stream);
-        let client = async {
-            let mut client = mstream.new_endpoint(EndPointId(1)).await.unwrap();
-            while client.connect(EndPointId(2)).await.is_err() {}
-            client
-        };
-        let server = async {
-            let mut server = mstream.new_endpoint(EndPointId(2)).await.unwrap();
-            while server.connect(EndPointId(1)).await.is_err() {}
-            server
-        };
-        let normal = async {
-            let mut normal = mstream.new_endpoint(EndPointId(3)).await.unwrap();
-            while normal.connect(EndPointId(3)).await.is_err() {}
-            normal
-        };
-        let (client, server, normal) = join!(client, server, normal);
-        rdma.set_agent_client(client);
-        rdma.set_agent_server(server);
-        rdma.set_normal(normal);
+        let stream = RdmaStream::new(stream);
+        let agent = Agent::new(stream);
+        rdma.agent = Some(Arc::new(agent));
         Ok(rdma)
     }
 
-    pub fn alloc_memory_region(&self, layout: Layout) -> io::Result<MemoryRegion> {
+    pub fn alloc_local_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
         let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_READ
@@ -194,12 +161,20 @@ impl Rdma {
         self.pd.alloc_memory_region(layout, access)
     }
 
-    pub async fn alloc_remote_memory_region(&self, layout: Layout) -> MemoryRegion {
-        if let Some(agent_clinet) = &self.agent_client {
-            agent_clinet.alloc_mr(layout).await
+    pub async fn alloc_remote_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
+        if let Some(agent) = &self.agent {
+            agent.alloc_mr(layout).await
         } else {
             panic!();
         }
+    }
+
+    pub async fn send_mr(&self, mr: &MemoryRegion) -> io::Result<()> {
+        todo!()
+    }
+
+    pub async fn receive_mr(&self) -> io::Result<MemoryRegion> {
+        todo!()
     }
 }
 
@@ -217,35 +192,14 @@ impl RdmaListener {
         let (mut stream, _) = self.tcp_listener.accept().await?;
         let mut rdma = RdmaBuilder::default().build()?;
         let mut remote = vec![0_u8; 22];
-        dbg!(remote.len());
         stream.read_exact(remote.as_mut()).await?;
         let remote: QueuePairEndpoint = bincode::deserialize(&remote).unwrap();
-        println!("handshake done");
         let local = bincode::serialize(&rdma.endpoint()).unwrap();
-        println!("handshake done");
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
-        println!("handshake done");
-        let mstream = MStream::new(stream);
-        let client = async {
-            let mut client = mstream.new_endpoint(EndPointId(1)).await.unwrap();
-            client.accept().await.unwrap();
-            client
-        };
-        let server = async {
-            let mut server = mstream.new_endpoint(EndPointId(2)).await.unwrap();
-            server.accept().await.unwrap();
-            server
-        };
-        let normal = async {
-            let mut normal = mstream.new_endpoint(EndPointId(3)).await.unwrap();
-            normal.accept().await.unwrap();
-            normal
-        };
-        let (client, server, normal) = join!(client, server, normal);
-        rdma.set_agent_client(client);
-        rdma.set_agent_server(server);
-        rdma.set_normal(normal);
+        let stream = RdmaStream::new(stream);
+        let agent = Agent::new(stream);
+        rdma.agent = Some(Arc::new(agent));
         Ok(rdma)
     }
 }
