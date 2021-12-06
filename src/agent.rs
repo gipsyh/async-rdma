@@ -22,7 +22,7 @@ pub struct Agent {
     response_waits: Arc<Mutex<ResponseWaitsMap>>,
     mr_own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
     mr_recv: Mutex<Receiver<io::Result<Arc<MemoryRegion>>>>,
-    handle: Option<JoinHandle<io::Result<()>>>,
+    _handle: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl Agent {
@@ -35,7 +35,7 @@ impl Agent {
         let (mr_send, mr_recv) = channel(1024);
         let mr_recv = Mutex::new(mr_recv);
         let ans = Arc::new(Self {
-            handle: None,
+            _handle: None,
             stream_write,
             mr_own,
             response_waits,

@@ -1,10 +1,12 @@
 use crate::*;
 use rdma_sys::{ibv_alloc_mw, ibv_mw, ibv_mw_type};
 
+#[allow(dead_code)]
 struct MemoryWindow {
     inner_mw: *mut ibv_mw,
 }
 
+#[allow(dead_code)]
 impl MemoryWindow {
     pub fn create(pd: &Arc<ProtectionDomain>) -> io::Result<Self> {
         let inner_mw = unsafe { ibv_alloc_mw(pd.as_ptr(), ibv_mw_type::IBV_MW_TYPE_1) }

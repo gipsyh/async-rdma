@@ -1,12 +1,3 @@
-#![feature(
-    ptr_internals,
-    slice_ptr_get,
-    slice_ptr_len,
-    bool_to_option,
-    cursor_remaining
-)]
-#![allow(dead_code)]
-
 mod agent;
 mod completion_queue;
 mod context;
@@ -109,11 +100,11 @@ impl Rdma {
         Ok(())
     }
 
-    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+    pub async fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
         self.qp.post_send(data)
     }
 
-    pub fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
+    pub async fn post_receive<LM: RdmaLocalMemory + SizedLayout>(&self) -> io::Result<LM> {
         self.qp.post_receive()
     }
 
@@ -124,7 +115,7 @@ impl Rdma {
     {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         let res = self.qp.write(local, remote, wr_id);
-        resp_rx.recv().await;
+        resp_rx.recv().await.unwrap().unwrap();
         res
     }
 
@@ -135,7 +126,7 @@ impl Rdma {
     {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         let res = self.qp.read(local, remote, wr_id);
-        resp_rx.recv().await;
+        resp_rx.recv().await.unwrap().unwrap();
         res
     }
 

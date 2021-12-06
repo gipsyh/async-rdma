@@ -17,7 +17,7 @@ struct Node {
 struct LocalRoot {
     inner_mr: NonNull<ibv_mr>,
     _pd: Arc<ProtectionDomain>,
-    data: Vec<u8>,
+    _data: Vec<u8>,
 }
 
 unsafe impl Send for LocalRoot {}
@@ -199,7 +199,7 @@ impl RdmaLocalMemory for MemoryRegion {
             kind: Kind::LocalRoot(LocalRoot {
                 inner_mr,
                 _pd: pd.clone(),
-                data,
+                _data: data,
             }),
             sub: Mutex::new(Vec::new()),
         })

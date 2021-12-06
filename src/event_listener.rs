@@ -17,7 +17,7 @@ type Responder<T> = mpsc::Sender<io::Result<T>>;
 type ReqMap<T> = Arc<LockFreeCuckooHash<u64, Responder<T>>>;
 pub struct EventListener {
     req_map: ReqMap<u64>,
-    poller_handle: tokio::task::JoinHandle<()>,
+    _poller_handle: tokio::task::JoinHandle<()>,
 }
 
 impl EventListener {
@@ -25,24 +25,19 @@ impl EventListener {
         let req_map = Arc::new(LockFreeCuckooHash::new());
         let req_map_move = req_map.clone();
         Self {
-            // event_channel,
-            // cq_addr,
             req_map,
-            poller_handle: Self::start(cq, req_map_move),
+            _poller_handle: Self::start(cq, req_map_move),
         }
     }
 
     pub fn start(cq: Arc<CompletionQueue>, req_map: ReqMap<u64>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            println!("EventListener is going to poll");
             let async_fd = AsyncFd::new(cq.event_channel().as_raw_fd()).unwrap();
             loop {
                 let mut guard = async_fd.readable().await.unwrap();
-                println!("poller wake up");
                 let res = match guard.try_io(|_| Self::get_res(&cq)) {
                     Ok(result) => result,
                     Err(_would_block) => {
-                        println!("poller is going to block and wait for the next event");
                         continue;
                     }
                 };
@@ -51,7 +46,6 @@ impl EventListener {
                         let map_guard = pin();
                         let _ = match req_map.remove_with_guard(&wr_id, &map_guard) {
                             Some(val) => {
-                                println!("get wr_id {}, and now wake up the related task.", wr_id);
                                 let _ = val
                                     .clone()
                                     .try_send(res)
@@ -96,9 +90,7 @@ impl EventListener {
         let rand = rand::thread_rng().gen::<u32>();
         let left: u64 = time.into();
         let right: u64 = rand.into();
-        let res = (left << 32) | right;
-        println!("Get rand wr_id : {:?}", res);
-        res
+        (left << 32) | right
     }
 
     pub fn get_res(cq_addr: &CompletionQueue) -> io::Result<u64> {
@@ -123,7 +115,6 @@ impl EventListener {
             }
             Ordering::Greater => {
                 // CQE found
-                println!("completion was found in CQ with wr_id={}", wc.wr_id);
                 // rc = 0;
                 // check the completion status (here we don't care about the completion opcode
                 debug_assert_eq!(
