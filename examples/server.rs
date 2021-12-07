@@ -15,7 +15,7 @@ async fn example2(rdma: &Rdma) {
 
 async fn example3(rdma: &Rdma) {
     let lmr = rdma.alloc_local_mr(Layout::new::<i32>()).unwrap();
-    rdma.post_receive(&lmr).await.unwrap();
+    rdma.receive(&lmr).await.unwrap();
     dbg!(unsafe { *(lmr.addr() as *mut i32) });
 }
 

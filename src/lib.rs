@@ -68,7 +68,6 @@ pub struct Rdma {
     pub pd: Arc<ProtectionDomain>,
     pub qp: Arc<QueuePair>,
     agent: Option<Arc<Agent>>,
-    event_listener: EventListener,
 }
 
 impl Rdma {
@@ -76,16 +75,18 @@ impl Rdma {
         let ctx = Arc::new(Context::open(dev_name)?);
         let ec = ctx.create_event_channel()?;
         let cq = Arc::new(ctx.create_completion_queue(cq_size, Some(ec))?);
-        let pd = Arc::new(ctx.create_protection_domain()?);
-        let mut qpb = pd.create_queue_pair_builder();
-        let qp = Arc::new(qpb.set_cq(&cq).build()?);
-        qp.modify_to_init(access)?;
         let event_listener = EventListener::new(cq);
+        let pd = Arc::new(ctx.create_protection_domain()?);
+        let qp = Arc::new(
+            pd.create_queue_pair_builder()
+                .set_event_listener(event_listener)
+                .build()?,
+        );
+        qp.modify_to_init(access)?;
         Ok(Self {
             ctx,
             pd,
             qp,
-            event_listener,
             agent: None,
         })
     }
@@ -100,29 +101,12 @@ impl Rdma {
         Ok(())
     }
 
-    pub async fn post_send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.qp.post_send(data, wr_id).unwrap();
-        resp_rx.recv().await.unwrap().unwrap();
-        Ok(())
+    pub async fn send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+        self.qp.send(data).await
     }
 
-    pub async fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.qp.post_receive(data, wr_id).unwrap();
-        resp_rx.recv().await.unwrap().unwrap();
-        Ok(())
-    }
-
-    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        let res = self.qp.write(local, remote, wr_id);
-        resp_rx.recv().await.unwrap().unwrap();
-        res
+    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+        self.qp.receive(data).await
     }
 
     pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
@@ -130,10 +114,15 @@ impl Rdma {
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        let res = self.qp.read(local, remote, wr_id);
-        resp_rx.recv().await.unwrap().unwrap();
-        res
+        self.qp.read(local, remote).await
+    }
+
+    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
+        self.qp.write(local, remote).await
     }
 
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {

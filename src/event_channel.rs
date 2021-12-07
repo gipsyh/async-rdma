@@ -7,6 +7,7 @@ pub struct EventChannel {
     pub ctx: Arc<Context>,
     pub inner_ec: NonNull<ibv_comp_channel>,
 }
+
 impl EventChannel {
     pub(crate) fn as_ptr(&self) -> *mut ibv_comp_channel {
         self.inner_ec.as_ptr()

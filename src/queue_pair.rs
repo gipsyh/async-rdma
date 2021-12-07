@@ -59,7 +59,7 @@ impl Debug for QueuePairInitAttr {
 
 pub struct QueuePairBuilder {
     pub pd: Arc<ProtectionDomain>,
-    cq: Option<Arc<CompletionQueue>>,
+    event_listener: Option<EventListener>,
     qp_init_attr: QueuePairInitAttr,
 }
 
@@ -67,12 +67,12 @@ impl QueuePairBuilder {
     pub fn new(pd: &Arc<ProtectionDomain>) -> Self {
         Self {
             pd: pd.clone(),
-            cq: None,
             qp_init_attr: QueuePairInitAttr::default(),
+            event_listener: None,
         }
     }
 
-    pub fn build(&mut self) -> io::Result<QueuePair> {
+    pub fn build(mut self) -> io::Result<QueuePair> {
         let inner_qp = NonNull::new(unsafe {
             rdma_sys::ibv_create_qp(
                 self.pd.as_ptr(),
@@ -82,15 +82,15 @@ impl QueuePairBuilder {
         .ok_or(io::ErrorKind::Other)?;
         Ok(QueuePair {
             pd: self.pd.clone(),
-            cq: self.cq.as_ref().unwrap().clone(),
             inner_qp,
+            event_listener: self.event_listener.unwrap(),
         })
     }
 
-    pub fn set_cq(&mut self, cq: &Arc<CompletionQueue>) -> &mut Self {
-        self.cq = Some(cq.clone());
-        self.qp_init_attr.qp_init_attr_inner.send_cq = cq.as_ptr();
-        self.qp_init_attr.qp_init_attr_inner.recv_cq = cq.as_ptr();
+    pub fn set_event_listener(mut self, el: EventListener) -> Self {
+        self.qp_init_attr.qp_init_attr_inner.send_cq = el.cq.as_ptr();
+        self.qp_init_attr.qp_init_attr_inner.recv_cq = el.cq.as_ptr();
+        self.event_listener = Some(el);
         self
     }
 }
@@ -104,7 +104,7 @@ pub struct QueuePairEndpoint {
 
 pub struct QueuePair {
     pd: Arc<ProtectionDomain>,
-    cq: Arc<CompletionQueue>,
+    event_listener: EventListener,
     inner_qp: NonNull<ibv_qp>,
 }
 
@@ -201,7 +201,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_send<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
+    fn post_send<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -214,7 +214,7 @@ impl QueuePair {
         sr.num_sge = 1;
         sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
-        self.cq.req_notify(false).unwrap();
+        self.event_listener.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
@@ -222,7 +222,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
+    fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
@@ -233,7 +233,7 @@ impl QueuePair {
         rr.wr_id = wr_id;
         rr.sg_list = &mut sge;
         rr.num_sge = 1;
-        self.cq.req_notify(false).unwrap();
+        self.event_listener.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_recv(self.as_ptr(), &mut rr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
@@ -260,7 +260,7 @@ impl QueuePair {
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
         sr.wr.rdma.remote_addr = remote.addr() as u64;
         sr.wr.rdma.rkey = remote.rkey();
-        self.cq.req_notify(false).unwrap();
+        self.event_listener.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
@@ -268,22 +268,46 @@ impl QueuePair {
         Ok(())
     }
 
-    pub fn read<LM, RM>(&self, local: &mut LM, remote: &RM, wr_id: u64) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
+    pub async fn send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        self.post_send(data, wr_id).unwrap();
+        resp_rx.recv().await.unwrap().unwrap();
+        Ok(())
     }
 
-    pub fn write<LM, RM>(&self, local: &LM, remote: &RM, wr_id: u64) -> io::Result<()>
+    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        self.post_receive(data, wr_id).unwrap();
+        resp_rx.recv().await.unwrap().unwrap();
+        Ok(())
+    }
+
+    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
     where
         LM: RdmaLocalMemory,
         RM: RdmaRemoteMemory,
     {
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let res = self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id);
+        resp_rx.recv().await.unwrap().unwrap();
+        res
+    }
+
+    pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
+    where
+        LM: RdmaLocalMemory,
+        RM: RdmaRemoteMemory,
+    {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let res = self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id);
+        resp_rx.recv().await.unwrap().unwrap();
+        res
     }
 }
+
+unsafe impl Sync for QueuePair {}
+
+unsafe impl Send for QueuePair {}
 
 impl Drop for QueuePair {
     fn drop(&mut self) {

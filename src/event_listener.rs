@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 type Responder<T> = mpsc::Sender<io::Result<T>>;
 type ReqMap<T> = Arc<LockFreeCuckooHash<u64, Responder<T>>>;
 pub struct EventListener {
+    pub cq: Arc<CompletionQueue>,
     req_map: ReqMap<u64>,
     _poller_handle: tokio::task::JoinHandle<()>,
 }
@@ -26,7 +27,8 @@ impl EventListener {
         let req_map_move = req_map.clone();
         Self {
             req_map,
-            _poller_handle: Self::start(cq, req_map_move),
+            _poller_handle: Self::start(cq.clone(), req_map_move),
+            cq,
         }
     }
 
