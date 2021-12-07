@@ -18,7 +18,7 @@ async fn example2(rdma: &Rdma) {
 async fn example3(rdma: &Rdma) {
     let lmr = Arc::new(rdma.alloc_local_mr(Layout::new::<i32>()).unwrap());
     unsafe { *(lmr.addr() as *mut i32) = 555 };
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_micros(10));
     rdma.send(lmr.as_ref()).await.unwrap();
 }
 

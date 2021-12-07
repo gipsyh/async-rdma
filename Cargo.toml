@@ -17,3 +17,5 @@ futures = "0.3.18"
 lockfree-cuckoohash = {git = "https://github.com/GTwhy/lockfree-cuckoohash"}
 rand = "0.8"
 thiserror = "1.0.30"
+num-traits = "0.2.14"
+num-derive = "0.3.3"

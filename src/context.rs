@@ -112,7 +112,7 @@ mod tests {
             .unwrap()
             .to_string()
             .split('/')
-            .nth(0)
+            .next()
             .unwrap()
             .to_string()
     }

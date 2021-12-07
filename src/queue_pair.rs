@@ -271,15 +271,17 @@ impl QueuePair {
     pub async fn send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.post_send(data, wr_id).unwrap();
-        resp_rx.recv().await.unwrap().unwrap();
-        Ok(())
+        resp_rx
+            .recv()
+            .await
+            .unwrap()
+            .map(|sz| assert_eq!(sz, data.length()))
     }
 
-    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<usize> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.post_receive(data, wr_id).unwrap();
-        resp_rx.recv().await.unwrap().unwrap();
-        Ok(())
+        resp_rx.recv().await.unwrap()
     }
 
     pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
@@ -288,9 +290,13 @@ impl QueuePair {
         RM: RdmaRemoteMemory,
     {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        let res = self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id);
-        resp_rx.recv().await.unwrap().unwrap();
-        res
+        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
+            .unwrap();
+        resp_rx
+            .recv()
+            .await
+            .unwrap()
+            .map(|sz| assert_eq!(sz, local.length()))
     }
 
     pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
@@ -299,9 +305,13 @@ impl QueuePair {
         RM: RdmaRemoteMemory,
     {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        let res = self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id);
-        resp_rx.recv().await.unwrap().unwrap();
-        res
+        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
+            .unwrap();
+        resp_rx
+            .recv()
+            .await
+            .unwrap()
+            .map(|sz| assert_eq!(sz, local.length()))
     }
 }
 

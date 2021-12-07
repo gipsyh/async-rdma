@@ -105,7 +105,7 @@ impl Rdma {
         self.qp.send(data).await
     }
 
-    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<usize> {
         self.qp.receive(data).await
     }
 
