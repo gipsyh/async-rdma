@@ -6,6 +6,7 @@ mod event_listener;
 mod gid;
 mod memory_region;
 mod memory_window;
+mod mr_allocator;
 mod protection_domain;
 mod queue_pair;
 mod rdma_stream;
@@ -17,6 +18,7 @@ pub use event_channel::*;
 use event_listener::EventListener;
 pub use gid::*;
 pub use memory_region::*;
+use mr_allocator::MRAllocator;
 pub use protection_domain::*;
 pub use queue_pair::*;
 use rdma_stream::RdmaStream;
@@ -63,8 +65,9 @@ impl Default for RdmaBuilder {
 #[allow(dead_code)]
 pub struct Rdma {
     ctx: Arc<Context>,
-    pub pd: Arc<ProtectionDomain>,
-    pub qp: Arc<QueuePair>,
+    pd: Arc<ProtectionDomain>,
+    allocator: Arc<MRAllocator>,
+    qp: Arc<QueuePair>,
     agent: Option<Arc<Agent>>,
 }
 
@@ -75,6 +78,7 @@ impl Rdma {
         let cq = Arc::new(ctx.create_completion_queue(cq_size, Some(ec))?);
         let event_listener = EventListener::new(cq);
         let pd = Arc::new(ctx.create_protection_domain()?);
+        let allocator = Arc::new(MRAllocator::new(pd.clone()));
         let qp = Arc::new(
             pd.create_queue_pair_builder()
                 .set_event_listener(event_listener)
@@ -86,6 +90,7 @@ impl Rdma {
             pd,
             qp,
             agent: None,
+            allocator,
         })
     }
 
@@ -138,11 +143,7 @@ impl Rdma {
     }
 
     pub fn alloc_local_mr(&self, layout: Layout) -> io::Result<LocalMemoryRegion> {
-        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-        self.pd.alloc_memory_region(layout, access)
+        self.allocator.alloc(layout)
     }
 
     pub async fn alloc_remote_mr(&self, layout: Layout) -> io::Result<RemoteMemoryRegion> {
