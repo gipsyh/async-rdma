@@ -16,16 +16,6 @@ pub struct MemoryRegionToken {
     pub rkey: u32,
 }
 
-pub trait MemoryRegionTrait {
-    fn as_ptr(&self) -> *const u8;
-
-    fn length(&self) -> usize;
-
-    fn rkey(&self) -> u32;
-
-    fn token(&self) -> MemoryRegionToken;
-}
-
 pub trait LocalRemoteMR {
     fn rkey(&self) -> u32;
 }
@@ -66,33 +56,96 @@ impl<T: LocalRemoteMR> MemoryRegion<T> {
         }
     }
 
-    fn slice(self: &Arc<Self>, _range: Range<usize>) -> io::Result<()> {
-        todo!()
-    }
-
-    fn alloc(self: &Arc<Self>, _layout: Layout) -> io::Result<Arc<Self>> {
-        todo!()
-    }
-}
-
-impl<T: LocalRemoteMR> MemoryRegionTrait for MemoryRegion<T> {
-    fn as_ptr(&self) -> *const u8 {
+    pub fn as_ptr(&self) -> *const u8 {
         self.addr as _
     }
 
-    fn length(&self) -> usize {
+    pub fn length(&self) -> usize {
         self.len
     }
 
-    fn rkey(&self) -> u32 {
+    pub fn rkey(&self) -> u32 {
         self.kind.rkey()
     }
 
-    fn token(&self) -> MemoryRegionToken {
+    pub fn token(&self) -> MemoryRegionToken {
         MemoryRegionToken {
             addr: self.addr,
             len: self.len,
             rkey: self.rkey(),
+        }
+    }
+
+    fn root(self: &Arc<Self>) -> Arc<Self> {
+        match &self.kind {
+            MemoryRegionKind::Root(_) => self.clone(),
+            MemoryRegionKind::Node(node) => node.root.clone(),
+        }
+    }
+
+    pub fn slice(self: &Arc<Self>, range: Range<usize>) -> io::Result<Self> {
+        if range.start >= range.end || range.end > self.len {
+            return Err(io::Error::new(io::ErrorKind::Other, "Invalid Range"));
+        }
+        if !self
+            .sub
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
+        {
+            return Err(io::Error::new(io::ErrorKind::Other, "No Enough Memory"));
+        }
+        self.sub.lock().unwrap().push(range.clone());
+        self.sub
+            .lock()
+            .unwrap()
+            .sort_by(|a, b| a.start.cmp(&b.start));
+        let new_node = Node {
+            fa: self.clone(),
+            root: self.root(),
+        };
+        let kind = MemoryRegionKind::Node(new_node);
+        Ok(Self {
+            addr: self.addr + range.start,
+            len: range.len(),
+            kind,
+            sub: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn alloc(self: &Arc<Self>, layout: Layout) -> io::Result<Self> {
+        let mut last = 0;
+        let mut ans = Err(io::Error::new(
+            io::ErrorKind::Other,
+            "No Enough Memory".to_string(),
+        ));
+        for range in self.sub.lock().unwrap().iter() {
+            if last + layout.size() <= range.start {
+                ans = Ok(last..last + layout.size());
+                break;
+            }
+            last = range.end
+        }
+        if last + layout.size() <= self.len {
+            ans = Ok(last..last + layout.size());
+        }
+        ans.map(|range| self.slice(range).unwrap())
+    }
+}
+
+impl<T: LocalRemoteMR> Drop for MemoryRegion<T> {
+    fn drop(&mut self) {
+        if let MemoryRegionKind::Node(node) = &self.kind {
+            let index = node
+                .fa
+                .sub
+                .lock()
+                .unwrap()
+                .iter()
+                .position(|x| (self.addr - node.fa.addr..self.len + self.addr - node.fa.addr) == *x)
+                .unwrap();
+            node.fa.sub.lock().unwrap().remove(index);
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::{
-    rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken, MemoryRegionTrait,
-    ProtectionDomain, RemoteMemoryRegion,
+    rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken, ProtectionDomain,
+    RemoteMemoryRegion,
 };
 use async_bincode::{AsyncBincodeStream, AsyncDestination};
 use futures::{

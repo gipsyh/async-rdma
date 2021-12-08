@@ -1,4 +1,4 @@
-use async_rdma::{MemoryRegionTrait, Rdma, RdmaListener};
+use async_rdma::{Rdma, RdmaListener};
 use futures::Future;
 use tokio::{io, net::ToSocketAddrs};
 

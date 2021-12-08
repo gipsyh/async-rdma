@@ -1,4 +1,4 @@
-use async_rdma::{MemoryRegionTrait, Rdma, RdmaListener};
+use async_rdma::{Rdma, RdmaListener};
 use std::alloc::Layout;
 async fn example1(rdma: &Rdma) {
     let mr = rdma.receive_local_mr().await.unwrap();
