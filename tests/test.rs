@@ -1,4 +1,4 @@
-use async_rdma::{Rdma, RdmaListener};
+use async_rdma::{MemoryRegionTrait, Rdma, RdmaListener};
 use futures::Future;
 use tokio::{io, net::ToSocketAddrs};
 
@@ -40,19 +40,18 @@ fn test_server_client<
 
 mod test1 {
     use crate::*;
-    use async_rdma::RdmaMemory;
     use std::{alloc::Layout, sync::Arc};
 
     async fn server(rdma: Rdma) -> io::Result<()> {
-        let mr = rdma.receive_mr().await.unwrap();
-        dbg!(unsafe { *(mr.addr() as *mut i32) });
+        let mr = rdma.receive_local_mr().await.unwrap();
+        dbg!(unsafe { *(mr.as_ptr() as *mut i32) });
         Ok(())
     }
 
     async fn client(rdma: Rdma) -> io::Result<()> {
         let rmr = Arc::new(rdma.alloc_remote_mr(Layout::new::<i32>()).await.unwrap());
         let lmr = rdma.alloc_local_mr(Layout::new::<i32>()).unwrap();
-        unsafe { *(lmr.addr() as *mut i32) = 5 };
+        unsafe { *(lmr.as_ptr() as *mut i32) = 5 };
         rdma.write(&lmr, rmr.as_ref()).await.unwrap();
         rdma.send_mr(rmr.clone()).await.unwrap();
         Ok(())

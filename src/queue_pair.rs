@@ -201,13 +201,13 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_send<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
+    fn post_send(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = data.addr() as u64;
-        sge.length = data.length() as u32;
-        sge.lkey = data.lkey();
+        sge.addr = lm.as_ptr() as u64;
+        sge.length = lm.length() as u32;
+        sge.lkey = lm.lkey();
         sr.next = std::ptr::null_mut();
         sr.wr_id = wr_id;
         sr.sg_list = &mut sge;
@@ -222,13 +222,13 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_receive<LM: RdmaLocalMemory>(&self, data: &LM, wr_id: u64) -> io::Result<()> {
+    fn post_receive(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
-        sge.addr = data.addr() as u64;
-        sge.length = data.length() as u32;
-        sge.lkey = data.lkey();
+        sge.addr = lm.as_ptr() as u64;
+        sge.length = lm.length() as u32;
+        sge.lkey = lm.lkey();
         rr.next = std::ptr::null_mut();
         rr.wr_id = wr_id;
         rr.sg_list = &mut sge;
@@ -241,25 +241,27 @@ impl QueuePair {
         Ok(())
     }
 
-    fn read_write<LM, RM>(&self, local: &LM, remote: &RM, opcode: u32, wr_id: u64) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
+    fn read_write(
+        &self,
+        lm: &LocalMemoryRegion,
+        rm: &RemoteMemoryRegion,
+        opcode: u32,
+        wr_id: u64,
+    ) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = local.addr() as u64;
-        sge.length = local.length() as u32;
-        sge.lkey = local.lkey();
+        sge.addr = lm.as_ptr() as u64;
+        sge.length = lm.length() as u32;
+        sge.lkey = lm.lkey();
         sr.next = std::ptr::null_mut();
         sr.wr_id = wr_id;
         sr.sg_list = &mut sge;
         sr.num_sge = 1;
         sr.opcode = opcode;
         sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
-        sr.wr.rdma.remote_addr = remote.addr() as u64;
-        sr.wr.rdma.rkey = remote.rkey();
+        sr.wr.rdma.remote_addr = rm.as_ptr() as u64;
+        sr.wr.rdma.rkey = rm.rkey();
         self.event_listener.cq.req_notify(false).unwrap();
         let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
         if errno != 0 {
@@ -268,50 +270,46 @@ impl QueuePair {
         Ok(())
     }
 
-    pub async fn send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
+    pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.post_send(data, wr_id).unwrap();
+        self.post_send(lm, wr_id).unwrap();
         resp_rx
             .recv()
             .await
             .unwrap()
-            .map(|sz| assert_eq!(sz, data.length()))
+            .map(|sz| assert_eq!(sz, lm.length()))
     }
 
-    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<usize> {
+    pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.post_receive(data, wr_id).unwrap();
+        self.post_receive(lm, wr_id).unwrap();
         resp_rx.recv().await.unwrap()
     }
 
-    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
+    pub async fn read(
+        &self,
+        lm: &mut LocalMemoryRegion,
+        rm: &RemoteMemoryRegion,
+    ) -> io::Result<()> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
+        self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
             .unwrap();
         resp_rx
             .recv()
             .await
             .unwrap()
-            .map(|sz| assert_eq!(sz, local.length()))
+            .map(|sz| assert_eq!(sz, lm.length()))
     }
 
-    pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
+    pub async fn write(&self, lm: &LocalMemoryRegion, rm: &RemoteMemoryRegion) -> io::Result<()> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.read_write(local, remote, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
+        self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
             .unwrap();
         resp_rx
             .recv()
             .await
             .unwrap()
-            .map(|sz| assert_eq!(sz, local.length()))
+            .map(|sz| assert_eq!(sz, lm.length()))
     }
 }
 

@@ -1,23 +1,22 @@
-use async_rdma::{Rdma, RdmaListener, RdmaMemory};
+use async_rdma::{MemoryRegionTrait, Rdma, RdmaListener};
 use std::alloc::Layout;
-
 async fn example1(rdma: &Rdma) {
-    let mr = rdma.receive_mr().await.unwrap();
-    dbg!(unsafe { *(mr.addr() as *mut i32) });
+    let mr = rdma.receive_local_mr().await.unwrap();
+    dbg!(unsafe { *(mr.as_ptr() as *mut i32) });
 }
 
 async fn example2(rdma: &Rdma) {
-    let rmr = rdma.receive_mr().await.unwrap();
+    let rmr = rdma.receive_remote_mr().await.unwrap();
     let mut lmr = rdma.alloc_local_mr(Layout::new::<i32>()).unwrap();
     rdma.read(&mut lmr, rmr.as_ref()).await.unwrap();
-    dbg!(unsafe { *(lmr.addr() as *mut i32) });
+    dbg!(unsafe { *(lmr.as_mut_ptr() as *mut i32) });
 }
 
 async fn example3(rdma: &Rdma) {
-    let lmr = rdma.alloc_local_mr(Layout::new::<i32>()).unwrap();
+    let mut lmr = rdma.alloc_local_mr(Layout::new::<i32>()).unwrap();
     let sz = rdma.receive(&lmr).await.unwrap();
     dbg!(sz);
-    dbg!(unsafe { *(lmr.addr() as *mut i32) });
+    dbg!(unsafe { *(lmr.as_mut_ptr() as *mut i32) });
 }
 
 #[tokio::main]

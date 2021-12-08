@@ -1,4 +1,7 @@
-use crate::{rdma_stream::RdmaStream, MemoryRegion, MemoryRegionRemoteToken, ProtectionDomain};
+use crate::{
+    rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken, MemoryRegionTrait,
+    ProtectionDomain, RemoteMemoryRegion,
+};
 use async_bincode::{AsyncBincodeStream, AsyncDestination};
 use futures::{
     stream::{SplitSink, SplitStream, StreamExt},
@@ -7,7 +10,7 @@ use futures::{
 use rand::Rng;
 use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
-use std::{alloc::Layout, collections::HashMap, io, sync::Arc};
+use std::{alloc::Layout, any::Any, collections::HashMap, io, sync::Arc};
 use tokio::{
     io::AsyncReadExt,
     sync::{
@@ -20,8 +23,8 @@ use tokio::{
 pub struct Agent {
     stream_write: Arc<Mutex<StreamWrite<RdmaStream>>>,
     response_waits: Arc<Mutex<ResponseWaitsMap>>,
-    mr_own: Arc<Mutex<HashMap<MemoryRegionRemoteToken, Arc<MemoryRegion>>>>,
-    mr_recv: Mutex<Receiver<io::Result<Arc<MemoryRegion>>>>,
+    mr_own: Arc<Mutex<HashMap<MemoryRegionToken, Arc<LocalMemoryRegion>>>>,
+    mr_recv: Mutex<Receiver<io::Result<Arc<dyn Any + Send + Sync>>>>,
     _handle: Option<JoinHandle<io::Result<()>>>,
 }
 
@@ -46,7 +49,7 @@ impl Agent {
         ans
     }
 
-    pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> io::Result<MemoryRegion> {
+    pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> io::Result<RemoteMemoryRegion> {
         let request = AllocMRRequest {
             size: layout.size(),
             align: layout.align(),
@@ -57,7 +60,7 @@ impl Agent {
         };
         let response = self.send_request(request).await.unwrap();
         if let ResponseKind::AllocMR(response) = response {
-            Ok(MemoryRegion::from_remote_token(
+            Ok(RemoteMemoryRegion::new_from_token(
                 response.token,
                 self.clone(),
             ))
@@ -66,7 +69,7 @@ impl Agent {
         }
     }
 
-    pub async fn release_mr(&self, token: MemoryRegionRemoteToken) -> io::Result<()> {
+    pub async fn release_mr(&self, token: MemoryRegionToken) -> io::Result<()> {
         let request = Request {
             request_id: RequestId::new(),
             kind: RequestKind::ReleaseMR(ReleaseMRRequest { token }),
@@ -75,12 +78,14 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn send_mr(&self, mr: Arc<MemoryRegion>) -> io::Result<()> {
-        let request = if mr.is_local() {
+    pub async fn send_mr(&self, mr: Arc<dyn Any + Send + Sync>) -> io::Result<()> {
+        let request = if mr.is::<LocalMemoryRegion>() {
+            let mr = mr.downcast::<LocalMemoryRegion>().unwrap();
             let ans = SendMRKind::Local(mr.token());
             self.mr_own.lock().await.insert(mr.token(), mr);
             ans
         } else {
+            let mr = mr.downcast::<RemoteMemoryRegion>().unwrap();
             SendMRKind::Remote(mr.token())
         };
         let request = Request {
@@ -91,7 +96,7 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn receive_mr(&self) -> io::Result<Arc<MemoryRegion>> {
+    pub async fn receive_mr(&self) -> io::Result<Arc<dyn Any + Send + Sync>> {
         self.mr_recv.lock().await.recv().await.unwrap()
     }
 
@@ -144,12 +149,12 @@ struct AllocMRRequest {
 
 #[derive(Serialize, Deserialize)]
 struct AllocMRResponse {
-    token: MemoryRegionRemoteToken,
+    token: MemoryRegionToken,
 }
 
 #[derive(Serialize, Deserialize)]
 struct ReleaseMRRequest {
-    token: MemoryRegionRemoteToken,
+    token: MemoryRegionToken,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -159,8 +164,8 @@ struct ReleaseMRResponse {
 
 #[derive(Serialize, Deserialize)]
 enum SendMRKind {
-    Local(MemoryRegionRemoteToken),
-    Remote(MemoryRegionRemoteToken),
+    Local(MemoryRegionToken),
+    Remote(MemoryRegionToken),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,7 +224,7 @@ async fn handle_request(
     agent: Arc<Agent>,
     request: Request,
     pd: Arc<ProtectionDomain>,
-    mr_send: Sender<io::Result<Arc<MemoryRegion>>>,
+    mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
 ) {
     let response = match request.kind {
         RequestKind::AllocMR(param) => {
@@ -247,7 +252,7 @@ async fn handle_request(
             match param.kind {
                 SendMRKind::Local(token) => {
                     assert!(mr_send
-                        .send(Ok(Arc::new(MemoryRegion::from_remote_token(
+                        .send(Ok(Arc::new(RemoteMemoryRegion::new_from_token(
                             token,
                             agent.clone()
                         ))))
@@ -294,7 +299,7 @@ async fn listen_main<SR: AsyncReadExt + Unpin>(
     agent: Arc<Agent>,
     mut stream_read: StreamRead<SR>,
     pd: Arc<ProtectionDomain>,
-    mr_send: Sender<io::Result<Arc<MemoryRegion>>>,
+    mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
 ) -> io::Result<()> {
     loop {
         let message = stream_read.next().await.unwrap().unwrap();

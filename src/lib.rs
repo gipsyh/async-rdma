@@ -8,7 +8,6 @@ mod memory_region;
 mod memory_window;
 mod protection_domain;
 mod queue_pair;
-mod rdma_box;
 mod rdma_stream;
 
 pub use agent::*;
@@ -20,10 +19,9 @@ pub use gid::*;
 pub use memory_region::*;
 pub use protection_domain::*;
 pub use queue_pair::*;
-pub use rdma_box::*;
 use rdma_stream::RdmaStream;
 use rdma_sys::ibv_access_flags;
-use std::{alloc::Layout, io, sync::Arc};
+use std::{alloc::Layout, any::Any, io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
@@ -101,27 +99,27 @@ impl Rdma {
         Ok(())
     }
 
-    pub async fn send<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<()> {
-        self.qp.send(data).await
+    pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
+        self.qp.send(lm).await
     }
 
-    pub async fn receive<LM: RdmaLocalMemory>(&self, data: &LM) -> io::Result<usize> {
-        self.qp.receive(data).await
+    pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
+        self.qp.receive(lm).await
     }
 
-    pub async fn read<LM, RM>(&self, local: &mut LM, remote: &RM) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
-        self.qp.read(local, remote).await
+    pub async fn read(
+        &self,
+        lm: &mut LocalMemoryRegion,
+        rm: &RemoteMemoryRegion,
+    ) -> io::Result<()> {
+        self.qp.read(lm, rm).await
     }
 
-    pub async fn write<LM, RM>(&self, local: &LM, remote: &RM) -> io::Result<()>
-    where
-        LM: RdmaLocalMemory,
-        RM: RdmaRemoteMemory,
-    {
+    pub async fn write(
+        &self,
+        local: &LocalMemoryRegion,
+        remote: &RemoteMemoryRegion,
+    ) -> io::Result<()> {
         self.qp.write(local, remote).await
     }
 
@@ -139,7 +137,7 @@ impl Rdma {
         Ok(rdma)
     }
 
-    pub fn alloc_local_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
+    pub fn alloc_local_mr(&self, layout: Layout) -> io::Result<LocalMemoryRegion> {
         let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
             | ibv_access_flags::IBV_ACCESS_REMOTE_READ
@@ -147,7 +145,7 @@ impl Rdma {
         self.pd.alloc_memory_region(layout, access)
     }
 
-    pub async fn alloc_remote_mr(&self, layout: Layout) -> io::Result<MemoryRegion> {
+    pub async fn alloc_remote_mr(&self, layout: Layout) -> io::Result<RemoteMemoryRegion> {
         if let Some(agent) = &self.agent {
             agent.alloc_mr(layout).await
         } else {
@@ -155,7 +153,7 @@ impl Rdma {
         }
     }
 
-    pub async fn send_mr(&self, mr: Arc<MemoryRegion>) -> io::Result<()> {
+    pub async fn send_mr(&self, mr: Arc<dyn Any + Send + Sync>) -> io::Result<()> {
         if let Some(agent) = &self.agent {
             agent.send_mr(mr).await
         } else {
@@ -163,12 +161,20 @@ impl Rdma {
         }
     }
 
-    pub async fn receive_mr(&self) -> io::Result<Arc<MemoryRegion>> {
+    pub async fn receive_mr(&self) -> io::Result<Arc<dyn Any + Send + Sync>> {
         if let Some(agent) = &self.agent {
             agent.receive_mr().await
         } else {
             panic!();
         }
+    }
+
+    pub async fn receive_local_mr(&self) -> io::Result<Arc<LocalMemoryRegion>> {
+        Ok(self.receive_mr().await?.downcast().unwrap())
+    }
+
+    pub async fn receive_remote_mr(&self) -> io::Result<Arc<RemoteMemoryRegion>> {
+        Ok(self.receive_mr().await?.downcast().unwrap())
     }
 }
 
@@ -196,30 +202,4 @@ impl RdmaListener {
         rdma.agent = Some(agent);
         Ok(rdma)
     }
-}
-
-pub trait RdmaMemory {
-    fn addr(&self) -> *const u8;
-
-    fn length(&self) -> usize;
-}
-
-pub trait RdmaLocalMemory: RdmaMemory {
-    fn new_from_pd(
-        pd: &Arc<ProtectionDomain>,
-        layout: Layout,
-        access: ibv_access_flags,
-    ) -> io::Result<Self>
-    where
-        Self: Sized;
-
-    fn lkey(&self) -> u32;
-}
-
-pub trait RdmaRemoteMemory: RdmaMemory {
-    fn rkey(&self) -> u32;
-}
-
-pub trait SizedLayout {
-    fn layout() -> Layout;
 }

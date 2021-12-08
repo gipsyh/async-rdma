@@ -1,4 +1,4 @@
-use crate::*;
+use crate::{Agent, ProtectionDomain};
 use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,321 +9,189 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-struct Node {
-    fa: Arc<MemoryRegion>,
-    root: Arc<MemoryRegion>,
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
+pub struct MemoryRegionToken {
+    pub addr: usize,
+    pub len: usize,
+    pub rkey: u32,
 }
 
-struct LocalRoot {
+pub trait MemoryRegionTrait {
+    fn as_ptr(&self) -> *const u8;
+
+    fn length(&self) -> usize;
+
+    fn rkey(&self) -> u32;
+
+    fn token(&self) -> MemoryRegionToken;
+}
+
+pub trait LocalRemoteMR {
+    fn rkey(&self) -> u32;
+}
+
+struct Node<T: LocalRemoteMR> {
+    fa: Arc<MemoryRegion<T>>,
+    root: Arc<MemoryRegion<T>>,
+}
+
+enum MemoryRegionKind<T: LocalRemoteMR> {
+    Root(T),
+    Node(Node<T>),
+}
+
+impl<T: LocalRemoteMR> MemoryRegionKind<T> {
+    fn rkey(&self) -> u32 {
+        match self {
+            MemoryRegionKind::Root(root) => root.rkey(),
+            MemoryRegionKind::Node(node) => node.root.rkey(),
+        }
+    }
+}
+
+pub struct MemoryRegion<T: LocalRemoteMR> {
+    addr: usize,
+    len: usize,
+    kind: MemoryRegionKind<T>,
+    sub: Mutex<Vec<Range<usize>>>,
+}
+
+impl<T: LocalRemoteMR> MemoryRegion<T> {
+    fn new(addr: usize, len: usize, t: T) -> Self {
+        Self {
+            addr,
+            len,
+            kind: MemoryRegionKind::Root(t),
+            sub: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn slice(self: &Arc<Self>, _range: Range<usize>) -> io::Result<()> {
+        todo!()
+    }
+
+    fn alloc(self: &Arc<Self>, _layout: Layout) -> io::Result<Arc<Self>> {
+        todo!()
+    }
+}
+
+impl<T: LocalRemoteMR> MemoryRegionTrait for MemoryRegion<T> {
+    fn as_ptr(&self) -> *const u8 {
+        self.addr as _
+    }
+
+    fn length(&self) -> usize {
+        self.len
+    }
+
+    fn rkey(&self) -> u32 {
+        self.kind.rkey()
+    }
+
+    fn token(&self) -> MemoryRegionToken {
+        MemoryRegionToken {
+            addr: self.addr,
+            len: self.len,
+            rkey: self.rkey(),
+        }
+    }
+}
+
+pub struct Local {
     inner_mr: NonNull<ibv_mr>,
     _pd: Arc<ProtectionDomain>,
     _data: Vec<u8>,
 }
 
-unsafe impl Send for LocalRoot {}
-
-unsafe impl Sync for LocalRoot {}
-
-struct RemoteRoot {
-    token: MemoryRegionRemoteToken,
-    agent: Arc<Agent>,
+impl Drop for Local {
+    fn drop(&mut self) {
+        let errno = unsafe { ibv_dereg_mr(self.inner_mr.as_ptr()) };
+        assert_eq!(errno, 0);
+    }
 }
 
-enum Kind {
-    LocalRoot(LocalRoot),
-    LocalNode(Node),
-    RemoteRoot(RemoteRoot),
-    RemoteNode(Node),
+impl Local {
+    fn lkey(&self) -> u32 {
+        unsafe { self.inner_mr.as_ref() }.lkey
+    }
 }
 
-pub struct MemoryRegion {
-    addr: usize,
-    length: usize,
-    key: u32,
-    kind: Kind,
-    sub: Mutex<Vec<Range<usize>>>,
+impl LocalRemoteMR for Local {
+    fn rkey(&self) -> u32 {
+        unsafe { self.inner_mr.as_ref() }.rkey
+    }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct MemoryRegionRemoteToken {
-    pub addr: usize,
-    pub length: usize,
-    pub rkey: u32,
-}
+unsafe impl Sync for Local {}
 
-impl MemoryRegion {
-    pub fn is_node(&self) -> bool {
-        matches!(self.kind, Kind::LocalNode(_) | Kind::RemoteNode(_))
+unsafe impl Send for Local {}
+
+pub type LocalMemoryRegion = MemoryRegion<Local>;
+
+impl LocalMemoryRegion {
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.as_ptr() as _
     }
 
-    pub fn is_local(&self) -> bool {
-        matches!(self.kind, Kind::LocalRoot(_) | Kind::LocalNode(_))
-    }
-
-    fn is_leaf(&self) -> bool {
-        self.sub.lock().unwrap().len() == 0
-    }
-
-    fn root(self: &Arc<Self>) -> Arc<MemoryRegion> {
+    pub fn lkey(&self) -> u32 {
         match &self.kind {
-            Kind::LocalNode(node) | Kind::RemoteNode(node) => node.root.clone(),
-            _ => self.clone(),
+            MemoryRegionKind::Root(root) => root.lkey(),
+            MemoryRegionKind::Node(node) => node.fa.lkey(),
         }
     }
 
-    pub fn new(pd: &Arc<ProtectionDomain>, layout: Layout) -> io::Result<Self> {
-        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-        MemoryRegion::new_from_pd(pd, layout, access)
-    }
-
-    pub fn token(&self) -> MemoryRegionRemoteToken {
-        match &self.kind {
-            Kind::LocalRoot(_) => MemoryRegionRemoteToken {
-                addr: self.addr() as _,
-                length: self.length(),
-                rkey: unsafe { *self.inner_mr() }.rkey,
-            },
-            Kind::LocalNode(_) => todo!(),
-            Kind::RemoteRoot(root) => root.token,
-            Kind::RemoteNode(_) => todo!(),
-        }
-    }
-
-    pub fn from_remote_token(token: MemoryRegionRemoteToken, agent: Arc<Agent>) -> Self {
-        Self {
-            addr: token.addr,
-            length: token.length,
-            key: token.rkey,
-            kind: Kind::RemoteRoot(RemoteRoot { token, agent }),
-            sub: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub(crate) fn inner_mr(&self) -> *mut ibv_mr {
-        if let Kind::LocalRoot(lroot) = &self.kind {
-            lroot.inner_mr.as_ptr()
-        } else {
-            panic!()
-        }
-    }
-
-    pub fn slice(self: &mut Arc<Self>, range: Range<usize>) -> Result<MemoryRegion, String> {
-        if range.start >= range.end || range.end > self.length {
-            return Err("Invalid Range".to_string());
-        }
-        if !self
-            .sub
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
-        {
-            return Err("No Enough Memory".to_string());
-        }
-        self.sub.lock().unwrap().push(range.clone());
-        self.sub
-            .lock()
-            .unwrap()
-            .sort_by(|a, b| a.start.cmp(&b.start));
-        let new_node = Node {
-            fa: self.clone(),
-            root: self.root(),
-        };
-        let kind = if self.is_local() {
-            Kind::LocalNode(new_node)
-        } else {
-            Kind::RemoteNode(new_node)
-        };
-        Ok(MemoryRegion {
-            addr: self.addr + range.start,
-            length: range.len(),
-            key: self.key,
-            kind,
-            sub: Mutex::new(Vec::new()),
-        })
-    }
-
-    pub fn alloc(self: &mut Arc<Self>, layout: Layout) -> Result<MemoryRegion, String> {
-        let range = {
-            let mut last = 0;
-            let mut ans = Err("No Enough Memory");
-            for range in self.sub.lock().unwrap().iter() {
-                if last + layout.size() <= range.start {
-                    ans = Ok(last..last + layout.size());
-                    break;
-                }
-                last = range.end
-            }
-            if last + layout.size() <= self.length {
-                ans = Ok(last..last + layout.size());
-            }
-            ans?
-        };
-        self.slice(range)
-    }
-}
-
-impl RdmaMemory for MemoryRegion {
-    fn addr(&self) -> *const u8 {
-        assert!(self.is_leaf());
-        self.addr as *const u8
-    }
-
-    fn length(&self) -> usize {
-        assert!(self.is_leaf());
-        self.length
-    }
-}
-
-impl RdmaLocalMemory for MemoryRegion {
-    fn new_from_pd(
+    pub fn new_from_pd(
         pd: &Arc<ProtectionDomain>,
         layout: Layout,
         access: ibv_access_flags,
-    ) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
+    ) -> io::Result<Self> {
         let data = vec![0_u8; layout.size()];
         let inner_mr = NonNull::new(unsafe {
             ibv_reg_mr(pd.as_ptr(), data.as_ptr() as _, data.len(), access.0 as _)
         })
         .ok_or_else(io::Error::last_os_error)?;
-        Ok(MemoryRegion {
-            addr: data.as_ptr() as _,
-            length: data.len(),
-            key: unsafe { *inner_mr.as_ptr() }.lkey,
-            kind: Kind::LocalRoot(LocalRoot {
-                inner_mr,
-                _pd: pd.clone(),
-                _data: data,
-            }),
-            sub: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn lkey(&self) -> u32 {
-        assert!(self.is_leaf());
-        assert!(self.is_local());
-        self.key
+        let addr = data.as_ptr() as _;
+        let len = data.len();
+        let local = Local {
+            inner_mr,
+            _pd: pd.clone(),
+            _data: data,
+        };
+        Ok(MemoryRegion::new(addr, len, local))
     }
 }
 
-impl RdmaRemoteMemory for MemoryRegion {
+pub struct Remote {
+    token: MemoryRegionToken,
+    agent: Arc<Agent>,
+}
+
+impl LocalRemoteMR for Remote {
     fn rkey(&self) -> u32 {
-        assert!(self.is_leaf());
-        // assert!(!self.is_local());
-        self.key
+        self.token.rkey
     }
 }
 
-impl Drop for MemoryRegion {
+impl Drop for Remote {
     fn drop(&mut self) {
-        assert_eq!(self.sub.lock().unwrap().len(), 0);
-        match &self.kind {
-            Kind::LocalRoot(_root) => {
-                let errno = unsafe { ibv_dereg_mr(self.inner_mr()) };
-                assert_eq!(errno, 0);
-            }
-            Kind::LocalNode(node) | Kind::RemoteNode(node) => {
-                let index = node
-                    .fa
-                    .sub
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .position(|x| {
-                        (self.addr - node.fa.addr..self.length + self.addr - node.fa.addr) == *x
-                    })
-                    .unwrap();
-                node.fa.sub.lock().unwrap().remove(index);
-            }
-            Kind::RemoteRoot(root) => {
-                let agent = root.agent.clone();
-                let token = root.token;
-                tokio::spawn(async move { Agent::release_mr(&agent, token).await });
-            }
+        let agent = self.agent.clone();
+        let token = self.token;
+        tokio::spawn(async move { Agent::release_mr(&agent, token).await });
+    }
+}
+
+pub type RemoteMemoryRegion = MemoryRegion<Remote>;
+
+impl RemoteMemoryRegion {
+    pub fn new_from_token(token: MemoryRegionToken, agent: Arc<Agent>) -> Self {
+        let addr = token.addr;
+        let len = token.len;
+        let remote = Remote { token, agent };
+        Self {
+            addr,
+            len,
+            kind: MemoryRegionKind::Root(remote),
+            sub: Mutex::new(Vec::new()),
         }
     }
-}
-
-unsafe impl Sync for MemoryRegion {}
-
-unsafe impl Send for MemoryRegion {}
-
-#[cfg(test)]
-mod tests {
-    use crate::*;
-    #[test]
-    fn mr_slice() -> io::Result<()> {
-        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-        let ctx = Arc::new(Context::open(None)?);
-        let pd = Arc::new(ctx.create_protection_domain()?);
-        let mut mr =
-            Arc::new(pd.alloc_memory_region(Layout::from_size_align(128, 8).unwrap(), access)?);
-        let sub = mr.slice(0..64).unwrap();
-        assert_eq!(mr.addr(), sub.addr());
-        assert_eq!(sub.length(), 64);
-        let _sub = mr.slice(0..64).err().unwrap();
-        let _sub = mr.slice(64..128).unwrap();
-        Ok(())
-    }
-
-    #[test]
-    fn mr_alloc() -> io::Result<()> {
-        let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-            | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-            | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
-        let ctx = Arc::new(Context::open(None)?);
-        let pd = Arc::new(ctx.create_protection_domain()?);
-        let mut mr =
-            Arc::new(pd.alloc_memory_region(Layout::from_size_align(128, 8).unwrap(), access)?);
-        let sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
-        drop(sub);
-        let _sub = mr.alloc(Layout::from_size_align(128, 8).unwrap()).unwrap();
-        let _sub = mr
-            .alloc(Layout::from_size_align(128, 8).unwrap())
-            .err()
-            .unwrap();
-        Ok(())
-    }
-
-    // #[test]
-    // fn server() -> io::Result<()> {
-    //     let rdma = RdmaBuilder::default().build()?;
-
-    //     let (stream, _) = std::net::TcpListener::bind("127.0.0.1:8000")?.accept()?;
-    //     let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
-    //     bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
-
-    //     rdma.handshake(remote)?;
-    //     let local_box = RdmaLocalBox::new(&rdma.pd, [1, 2, 3, 4]);
-    //     let token: MemoryRegionRemoteToken = bincode::deserialize_from(&stream).unwrap();
-    //     let remote_mr = MemoryRegion::from_remote_token(token);
-    //     rdma.qp.write(&local_box, &remote_mr)?;
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn client() -> io::Result<()> {
-    //     let rdma = RdmaBuilder::default().build()?;
-
-    //     let stream = std::net::TcpStream::connect("127.0.0.1:8000")?;
-    //     bincode::serialize_into(&stream, &rdma.endpoint()).unwrap();
-    //     let remote: QueuePairEndpoint = bincode::deserialize_from(&stream).unwrap();
-
-    //     rdma.handshake(remote)?;
-    //     let local_mr = Arc::new(MemoryRegion::new(&rdma.pd, Layout::new::<[i32; 4]>()).unwrap());
-    //     bincode::serialize_into(&stream, &local_mr.remote_token()).unwrap();
-    //     std::thread::sleep(std::time::Duration::from_secs(1));
-    //     dbg!(unsafe { *(local_mr.addr() as *mut i32) });
-    //     Ok(())
-    // }
 }

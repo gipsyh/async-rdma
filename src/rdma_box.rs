@@ -15,7 +15,7 @@ impl<T> RdmaLocalBox<T> {
             | ibv_access_flags::IBV_ACCESS_REMOTE_READ
             | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
         let mr = pd.alloc_memory_region(Layout::new::<T>(), access).unwrap();
-        let ptr = unsafe { *mr.inner_mr() }.addr as *mut T;
+        let ptr = unsafe { *mr.as_ptr() }.addr as *mut T;
         unsafe { ptr.write(x) };
         let data = NonNull::new(ptr).unwrap();
         RdmaLocalBox { mr, data }
@@ -28,7 +28,7 @@ impl<T> RdmaLocalBox<T> {
 
     pub fn remote_box(&self) -> RdmaRemoteBox {
         RdmaRemoteBox {
-            ptr: self.addr() as _,
+            ptr: selfas_ptr() as _,
             len: self.length(),
             rkey: self.mr.rkey(),
         }
@@ -55,7 +55,7 @@ impl<T> RdmaLocalMemory for RdmaLocalBox<T> {
         Self: Sized,
     {
         let mr = pd.alloc_memory_region(layout, access)?;
-        let ptr = unsafe { *mr.inner_mr() }.addr as *mut T;
+        let ptr = unsafe { *mr.as_ptr() }.addr as *mut T;
         let data = NonNull::new(ptr).unwrap();
         Ok(RdmaLocalBox { mr, data })
     }

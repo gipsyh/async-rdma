@@ -1,4 +1,4 @@
-use crate::{Context, MemoryRegion, QueuePairBuilder, RdmaLocalMemory};
+use crate::{Context, LocalMemoryRegion, QueuePairBuilder};
 use rdma_sys::{ibv_access_flags, ibv_alloc_pd, ibv_dealloc_pd, ibv_pd};
 use std::{alloc::Layout, io, ptr::NonNull, sync::Arc};
 
@@ -29,8 +29,8 @@ impl ProtectionDomain {
         self: &Arc<Self>,
         layout: Layout,
         access: ibv_access_flags,
-    ) -> io::Result<MemoryRegion> {
-        MemoryRegion::new_from_pd(self, layout, access)
+    ) -> io::Result<LocalMemoryRegion> {
+        LocalMemoryRegion::new_from_pd(self, layout, access)
     }
 }
 
