@@ -14,8 +14,11 @@ impl MRAllocator {
             | ibv_access_flags::IBV_ACCESS_REMOTE_READ
             | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
         let mr = Arc::new(
-            pd.alloc_memory_region(Layout::from_size_align(4096 * 1024, 4096).unwrap(), access)
-                .unwrap(),
+            pd.alloc_memory_region(
+                Layout::from_size_align(4096 * 1024, 4096).unwrap(),
+                access,
+            )
+            .unwrap(),
         );
         Self { _pd: pd, mr }
     }

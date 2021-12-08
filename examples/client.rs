@@ -1,5 +1,6 @@
-use async_rdma::Rdma;
+use async_rdma::{DoubleRdma, Rdma};
 use std::{alloc::Layout, sync::Arc, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn example1(rdma: &Rdma) {
     let rmr = Arc::new(rdma.alloc_remote_mr(Layout::new::<i32>()).await.unwrap());
@@ -22,12 +23,30 @@ async fn example3(rdma: &Rdma) {
     rdma.send(lmr.as_ref()).await.unwrap();
 }
 
+async fn example4(rdma: &mut DoubleRdma) {
+    for _ in 0..10 {
+        let data = vec![1, 2, 3, 4];
+        println!("begin write");
+        rdma.write_all(data.as_slice()).await.unwrap();
+        println!("write done");
+    }
+    for _ in 0..10 {
+        let mut data = vec![0, 0, 0, 0];
+        rdma.read_exact(data.as_mut()).await.unwrap();
+        println!("read done");
+        dbg!(data);
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let rdma = Rdma::connect("127.0.0.1:5555").await.unwrap();
-    example1(&rdma).await;
-    example2(&rdma).await;
-    example3(&rdma).await;
-    println!("client done");
+    let mut rdma = DoubleRdma::connect("127.0.0.1:5555", "127.0.0.1:6666")
+        .await
+        .unwrap();
+    // example1(&mut rdma).await;
+    // example2(&mut rdma).await;
+    // example3(&mut rdma).await;
+    example4(&mut rdma).await;
+    // println!("client done");
     loop {}
 }

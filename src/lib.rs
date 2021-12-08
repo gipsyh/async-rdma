@@ -10,22 +10,24 @@ mod mr_allocator;
 mod protection_domain;
 mod queue_pair;
 mod rdma_stream;
+mod stream_rdma;
 
-pub use agent::*;
-pub use completion_queue::*;
-pub use context::*;
-pub use event_channel::*;
+use agent::*;
+use completion_queue::*;
+use context::*;
+use event_channel::*;
 use event_listener::EventListener;
-pub use gid::*;
+use gid::*;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;
-pub use protection_domain::*;
-pub use queue_pair::*;
+use protection_domain::*;
+use queue_pair::*;
 use rdma_stream::RdmaStream;
 use rdma_sys::ibv_access_flags;
-use std::{alloc::Layout, any::Any, io, sync::Arc};
+use std::{alloc::Layout, any::Any, fmt::Debug, io, pin::Pin, sync::Arc, time::Duration};
+use stream_rdma::StreamRdma;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
 
@@ -69,6 +71,7 @@ pub struct Rdma {
     allocator: Arc<MRAllocator>,
     qp: Arc<QueuePair>,
     agent: Option<Arc<Agent>>,
+    stream_rdma: StreamRdma,
 }
 
 impl Rdma {
@@ -85,12 +88,14 @@ impl Rdma {
                 .build()?,
         );
         qp.modify_to_init(access)?;
+        let stream_rdma = StreamRdma::new(allocator.clone(), qp.clone());
         Ok(Self {
             ctx,
             pd,
             qp,
             agent: None,
             allocator,
+            stream_rdma,
         })
     }
 
@@ -202,5 +207,131 @@ impl RdmaListener {
         let agent = Agent::new(stream, rdma.pd.clone());
         rdma.agent = Some(agent);
         Ok(rdma)
+    }
+}
+
+impl AsyncRead for Rdma {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream_rdma).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Rdma {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.get_mut().stream_rdma).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.get_mut().stream_rdma).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.get_mut().stream_rdma).poll_shutdown(cx)
+    }
+}
+
+impl Debug for Rdma {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rdma").finish()
+    }
+}
+
+impl Debug for RdmaListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdmaListener")
+            .field("tcp_listener", &self.tcp_listener)
+            .finish()
+    }
+}
+
+pub struct DoubleRdma {
+    rdma1: Rdma,
+    rdma2: Rdma,
+}
+
+impl DoubleRdma {
+    pub async fn connect<A: ToSocketAddrs>(addr1: A, addr2: A) -> io::Result<Self> {
+        let rdma1 = Rdma::connect(addr1).await.unwrap();
+        std::thread::sleep(Duration::from_micros(10));
+        let rdma2 = Rdma::connect(addr2).await.unwrap();
+        Ok(Self { rdma1, rdma2 })
+    }
+}
+
+pub struct DoubleRdmaListener {
+    l1: RdmaListener,
+    l2: RdmaListener,
+}
+
+impl DoubleRdmaListener {
+    pub async fn bind<A: ToSocketAddrs>(addr1: A, addr2: A) -> io::Result<Self> {
+        let l1 = RdmaListener::bind(addr1).await.unwrap();
+        let l2 = RdmaListener::bind(addr2).await.unwrap();
+        Ok(Self { l1, l2 })
+    }
+
+    pub async fn accept(&self) -> io::Result<DoubleRdma> {
+        let rdma2 = self.l1.accept().await.unwrap();
+        let rdma1 = self.l2.accept().await.unwrap();
+        Ok(DoubleRdma { rdma1, rdma2 })
+    }
+}
+
+impl AsyncRead for DoubleRdma {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().rdma1).poll_read(cx, buf)
+    }
+}
+impl AsyncWrite for DoubleRdma {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.get_mut().rdma2).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.get_mut().rdma2).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.get_mut().rdma2).poll_shutdown(cx)
+    }
+}
+
+impl Debug for DoubleRdma {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleRdma").finish()
+    }
+}
+
+impl Debug for DoubleRdmaListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleRdmaListener").finish()
     }
 }

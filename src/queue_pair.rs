@@ -104,7 +104,7 @@ pub struct QueuePairEndpoint {
 
 pub struct QueuePair {
     pd: Arc<ProtectionDomain>,
-    event_listener: EventListener,
+    pub event_listener: EventListener,
     inner_qp: NonNull<ibv_qp>,
 }
 
@@ -201,7 +201,7 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_send(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
+    pub fn post_send(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
