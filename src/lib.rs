@@ -17,6 +17,7 @@ pub use context::*;
 pub use event_channel::*;
 use event_listener::EventListener;
 pub use gid::*;
+use log::debug;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;
 pub use protection_domain::*;
@@ -100,7 +101,9 @@ impl Rdma {
 
     pub fn handshake(&self, remote: QueuePairEndpoint) -> io::Result<()> {
         self.qp.modify_to_rtr(remote, 0, 1, 0x12)?;
+        debug!("rtr");
         self.qp.modify_to_rts(0x12, 6, 0, 0, 1)?;
+        debug!("rts");
         Ok(())
     }
 
@@ -191,13 +194,18 @@ impl RdmaListener {
 
     pub async fn accept(&self) -> io::Result<Rdma> {
         let (mut stream, _) = self.tcp_listener.accept().await?;
+        debug!("tcp accepted");
         let mut rdma = RdmaBuilder::default().build()?;
         let mut remote = vec![0_u8; 22];
         stream.read_exact(remote.as_mut()).await?;
+        debug!("read stream done");
         let remote: QueuePairEndpoint = bincode::deserialize(&remote).unwrap();
+        debug!("remote qpe info : {:?}", remote);
         let local = bincode::serialize(&rdma.endpoint()).unwrap();
+        debug!("write local info {:?} into steam", &rdma.endpoint());
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
+        debug!("handshake done");
         let stream = RdmaStream::new(stream);
         let agent = Agent::new(stream, rdma.pd.clone());
         rdma.agent = Some(agent);

@@ -159,6 +159,8 @@ impl QueuePair {
         attr.ah_attr.port_num = 1;
         attr.ah_attr.grh.dgid = remote.gid.into();
         attr.ah_attr.grh.hop_limit = 0xff;
+        //TODO: Configurable sgid_index
+        attr.ah_attr.grh.sgid_index = 1;
         let flags = ibv_qp_attr_mask::IBV_QP_STATE
             | ibv_qp_attr_mask::IBV_QP_AV
             | ibv_qp_attr_mask::IBV_QP_PATH_MTU
@@ -167,6 +169,10 @@ impl QueuePair {
             | ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
             | ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
         let errno = unsafe { ibv_modify_qp(self.as_ptr(), &mut attr, flags.0 as _) };
+        debug!(
+            "modify qp to rtr, err info : {:?}",
+            io::Error::from_raw_os_error(errno)
+        );
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }

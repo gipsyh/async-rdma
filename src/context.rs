@@ -40,7 +40,7 @@ impl Context {
             NonNull::new(unsafe { ibv_open_device(*dev) }).ok_or_else(io::Error::last_os_error)?;
         unsafe { ibv_free_device_list(dev_list_ptr) };
         let mut gid = Gid::default();
-        let errno = unsafe { ibv_query_gid(inner_ctx.as_ptr(), 1, 0, gid.as_mut()) };
+        let errno = unsafe { ibv_query_gid(inner_ctx.as_ptr(), 1, 1, gid.as_mut()) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
