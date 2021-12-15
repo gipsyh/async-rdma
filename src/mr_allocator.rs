@@ -24,7 +24,21 @@ impl MRAllocator {
         self.mr.alloc(layout)
     }
 
-    pub fn _release(&self, _mr: LocalMemoryRegion) -> io::Result<()> {
-        todo!()
+    pub fn _release(&self, _mr: LocalMemoryRegion) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::RdmaBuilder;
+    use std::alloc::Layout;
+
+    #[tokio::test]
+    async fn test1() {
+        let rdma = RdmaBuilder::default().build().unwrap();
+        let mut mrs = vec![];
+        for _ in 0..1024 {
+            let mr = rdma.alloc_local_mr(Layout::new::<[u8; 4096]>()).unwrap();
+            mrs.push(mr);
+        }
     }
 }

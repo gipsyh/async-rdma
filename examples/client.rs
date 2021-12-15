@@ -8,7 +8,6 @@ async fn example1(rdma: &Rdma) {
     unsafe { *(lmr.as_mut_ptr() as *mut i32) = 5 };
     rdma.write(&lmr, rmr.as_ref()).await.unwrap();
     debug!("e1 write");
-    tokio::time::sleep(Duration::new(1, 0)).await;
     rdma.send_mr(rmr.clone()).await.unwrap();
     debug!("e1 send");
 }
@@ -16,7 +15,6 @@ async fn example1(rdma: &Rdma) {
 async fn example2(rdma: &Rdma) {
     let mut lmr = Arc::new(rdma.alloc_local_mr(Layout::new::<i32>()).unwrap());
     unsafe { *(Arc::get_mut(&mut lmr).unwrap().as_mut_ptr() as *mut i32) = 55 };
-    tokio::time::sleep(Duration::new(1, 0)).await;
     rdma.send_mr(lmr.clone()).await.unwrap();
     debug!("e2 send");
 }
@@ -24,8 +22,6 @@ async fn example2(rdma: &Rdma) {
 async fn example3(rdma: &Rdma) {
     let mut lmr = Arc::new(rdma.alloc_local_mr(Layout::new::<i32>()).unwrap());
     unsafe { *(Arc::get_mut(&mut lmr).unwrap().as_mut_ptr() as *mut i32) = 555 };
-    // std::thread::sleep(Duration::from_micros(10));
-    tokio::time::sleep(Duration::new(1, 0)).await;
     rdma.send(lmr.as_ref()).await.unwrap();
     debug!("e3 send");
 }

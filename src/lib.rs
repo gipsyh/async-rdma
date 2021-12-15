@@ -15,7 +15,7 @@ pub use agent::*;
 pub use completion_queue::*;
 pub use context::*;
 pub use event_channel::*;
-use event_listener::EventListener;
+use event_listener::{EventListener, WCError};
 pub use gid::*;
 use log::debug;
 pub use memory_region::*;
@@ -99,20 +99,26 @@ impl Rdma {
         self.qp.endpoint()
     }
 
-    pub fn handshake(&self, remote: QueuePairEndpoint) -> io::Result<()> {
+    pub fn handshake(&mut self, remote: QueuePairEndpoint) -> io::Result<()> {
         self.qp.modify_to_rtr(remote, 0, 1, 0x12)?;
         debug!("rtr");
-        self.qp.modify_to_rts(0x12, 6, 0, 0, 1)?;
+        self.qp.modify_to_rts(0x12, 6, 7, 0, 1)?;
         debug!("rts");
         Ok(())
     }
 
     pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
-        self.qp.send(lm).await
+        let res = self.qp.send(lm).await;
+        match res {
+            Err(WCError::RnrRetryExc) => {
+                panic!();
+            }
+            _ => res.map_err(|e| e.into()),
+        }
     }
 
     pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
-        self.qp.receive(lm).await
+        self.qp.receive(lm).await.map_err(|e| e.into())
     }
 
     pub async fn read(
@@ -120,7 +126,7 @@ impl Rdma {
         lm: &mut LocalMemoryRegion,
         rm: &RemoteMemoryRegion,
     ) -> io::Result<()> {
-        self.qp.read(lm, rm).await
+        self.qp.read(lm, rm).await.map_err(|e| e.into())
     }
 
     pub async fn write(
@@ -128,7 +134,7 @@ impl Rdma {
         local: &LocalMemoryRegion,
         remote: &RemoteMemoryRegion,
     ) -> io::Result<()> {
-        self.qp.write(local, remote).await
+        self.qp.write(local, remote).await.map_err(|e| e.into())
     }
 
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {

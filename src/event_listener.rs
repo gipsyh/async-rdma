@@ -59,9 +59,15 @@ pub enum WCError {
     GeneralErr = 21,
 }
 
+impl From<WCError> for io::Error {
+    fn from(e: WCError) -> Self {
+        io::Error::new(io::ErrorKind::Other, e)
+    }
+}
+
 /// Provided by the requester and used by the manager task to send
 /// the command response back to the requester.
-type Responder<T> = mpsc::Sender<io::Result<T>>;
+type Responder<T> = mpsc::Sender<Result<T, WCError>>;
 type ReqMap<T> = Arc<LockFreeCuckooHash<u64, Responder<T>>>;
 pub struct EventListener {
     pub cq: Arc<CompletionQueue>,
@@ -119,7 +125,7 @@ impl EventListener {
         })
     }
 
-    pub fn register(&self) -> (u64, mpsc::Receiver<io::Result<usize>>) {
+    pub fn register(&self) -> (u64, mpsc::Receiver<Result<usize, WCError>>) {
         let (tx, rx) = mpsc::channel(2);
         let mut wr_id = Self::rand_wrid();
         loop {
@@ -143,7 +149,7 @@ impl EventListener {
         (left << 32) | right
     }
 
-    pub fn get_res(cq_addr: &CompletionQueue) -> io::Result<(u64, io::Result<usize>)> {
+    pub fn get_res(cq_addr: &CompletionQueue) -> io::Result<(u64, Result<usize, WCError>)> {
         let cq = cq_addr.as_ptr();
         let mut wc = unsafe { std::mem::zeroed::<ibv_wc>() };
         let poll_result = unsafe { ibv_poll_cq(cq, 1, &mut wc) };
@@ -166,10 +172,7 @@ impl EventListener {
                 let res = if wc.status == ibv_wc_status::IBV_WC_SUCCESS {
                     Ok(wc.byte_len as usize)
                 } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        WCError::from_u32(wc.status).unwrap(),
-                    ))
+                    Err(WCError::from_u32(wc.status).unwrap())
                 };
                 Ok((wc.wr_id, res))
                 // debug_assert_eq!(

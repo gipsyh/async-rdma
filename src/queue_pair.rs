@@ -1,4 +1,8 @@
-use crate::*;
+use crate::{
+    event_listener::{EventListener, WCError},
+    Gid, LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion,
+};
+use log::debug;
 use rdma_sys::{
     ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
@@ -276,7 +280,7 @@ impl QueuePair {
         Ok(())
     }
 
-    pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
+    pub async fn send(&self, lm: &LocalMemoryRegion) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.post_send(lm, wr_id).unwrap();
         resp_rx
@@ -286,7 +290,7 @@ impl QueuePair {
             .map(|sz| assert_eq!(sz, lm.length()))
     }
 
-    pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
+    pub async fn receive(&self, lm: &LocalMemoryRegion) -> Result<usize, WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.post_receive(lm, wr_id).unwrap();
         resp_rx.recv().await.unwrap()
@@ -296,7 +300,7 @@ impl QueuePair {
         &self,
         lm: &mut LocalMemoryRegion,
         rm: &RemoteMemoryRegion,
-    ) -> io::Result<()> {
+    ) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
             .unwrap();
@@ -307,7 +311,11 @@ impl QueuePair {
             .map(|sz| assert_eq!(sz, lm.length()))
     }
 
-    pub async fn write(&self, lm: &LocalMemoryRegion, rm: &RemoteMemoryRegion) -> io::Result<()> {
+    pub async fn write(
+        &self,
+        lm: &LocalMemoryRegion,
+        rm: &RemoteMemoryRegion,
+    ) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
             .unwrap();
