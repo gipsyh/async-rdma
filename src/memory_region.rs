@@ -6,6 +6,7 @@ use std::{
     io,
     ops::Range,
     ptr::NonNull,
+    slice,
     sync::{Arc, Mutex},
 };
 
@@ -184,6 +185,14 @@ pub type LocalMemoryRegion = MemoryRegion<Local>;
 impl LocalMemoryRegion {
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.as_ptr() as _
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.length()) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.length()) }
     }
 
     pub fn lkey(&self) -> u32 {
