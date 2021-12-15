@@ -1,6 +1,6 @@
 use crate::{
-    rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken, ProtectionDomain,
-    RemoteMemoryRegion,
+    mr_allocator::MRAllocator, rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken,
+    QueuePair, RemoteMemoryRegion,
 };
 use async_bincode::{AsyncBincodeStream, AsyncDestination};
 use futures::{
@@ -8,7 +8,6 @@ use futures::{
     SinkExt,
 };
 use rand::Rng;
-use rdma_sys::ibv_access_flags;
 use serde::{Deserialize, Serialize};
 use std::{alloc::Layout, any::Any, collections::HashMap, io, sync::Arc};
 use tokio::{
@@ -21,15 +20,17 @@ use tokio::{
 };
 
 pub struct Agent {
+    _qp: Arc<QueuePair>,
     stream_write: Arc<Mutex<StreamWrite<RdmaStream>>>,
     response_waits: Arc<Mutex<ResponseWaitsMap>>,
     mr_own: Arc<Mutex<HashMap<MemoryRegionToken, Arc<LocalMemoryRegion>>>>,
     mr_recv: Mutex<Receiver<io::Result<Arc<dyn Any + Send + Sync>>>>,
+    allocator: Arc<MRAllocator>,
     _handle: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl Agent {
-    pub fn new(stream: RdmaStream, pd: Arc<ProtectionDomain>) -> Arc<Self> {
+    pub fn new(stream: RdmaStream, qp: Arc<QueuePair>, allocator: Arc<MRAllocator>) -> Arc<Self> {
         let stream = AsyncBincodeStream::<_, Message, Message, _>::from(stream).for_async();
         let (stream_write, stream_read) = stream.split();
         let stream_write = Arc::new(Mutex::new(stream_write));
@@ -43,8 +44,10 @@ impl Agent {
             mr_own,
             response_waits,
             mr_recv,
+            allocator,
+            _qp: qp,
         });
-        let _handle = tokio::spawn(listen_main(ans.clone(), stream_read, pd, mr_send));
+        let _handle = tokio::spawn(listen_main(ans.clone(), stream_read, mr_send));
         // ans.handle = Some(handle);
         ans
     }
@@ -223,21 +226,15 @@ enum Message {
 async fn handle_request(
     agent: Arc<Agent>,
     request: Request,
-    pd: Arc<ProtectionDomain>,
     mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
 ) {
     let response = match request.kind {
         RequestKind::AllocMR(param) => {
-            let access = ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
             let mr = Arc::new(
-                pd.alloc_memory_region(
-                    Layout::from_size_align(param.size, param.align).unwrap(),
-                    access,
-                )
-                .unwrap(),
+                agent
+                    .allocator
+                    .alloc(Layout::from_size_align(param.size, param.align).unwrap())
+                    .unwrap(),
             );
             let token = mr.token();
             let response = AllocMRResponse { token };
@@ -298,19 +295,13 @@ async fn handle_response(response: Response, response_waits: Arc<Mutex<ResponseW
 async fn listen_main<SR: AsyncReadExt + Unpin>(
     agent: Arc<Agent>,
     mut stream_read: StreamRead<SR>,
-    pd: Arc<ProtectionDomain>,
     mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
 ) -> io::Result<()> {
     loop {
         let message = stream_read.next().await.unwrap().unwrap();
         match message {
             Message::Request(request) => {
-                tokio::spawn(handle_request(
-                    agent.clone(),
-                    request,
-                    pd.clone(),
-                    mr_send.clone(),
-                ));
+                tokio::spawn(handle_request(agent.clone(), request, mr_send.clone()));
             }
             Message::Response(response) => {
                 tokio::spawn(handle_response(response, agent.response_waits.clone()));

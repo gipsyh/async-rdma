@@ -146,7 +146,7 @@ impl Rdma {
         let remote: QueuePairEndpoint = bincode::deserialize(&endpoint).unwrap();
         rdma.handshake(remote)?;
         let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream, rdma.pd.clone());
+        let agent = Agent::new(stream, rdma.qp.clone(), rdma.allocator.clone());
         rdma.agent = Some(agent);
         Ok(rdma)
     }
@@ -213,7 +213,7 @@ impl RdmaListener {
         rdma.handshake(remote)?;
         debug!("handshake done");
         let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream, rdma.pd.clone());
+        let agent = Agent::new(stream, rdma.qp.clone(), rdma.allocator.clone());
         rdma.agent = Some(agent);
         Ok(rdma)
     }
