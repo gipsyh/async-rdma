@@ -3,11 +3,12 @@ use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
     alloc::Layout,
+    fmt::Debug,
     io,
     ops::Range,
     ptr::NonNull,
     slice,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
@@ -20,12 +21,13 @@ pub struct MemoryRegionToken {
 pub trait LocalRemoteMR {
     fn rkey(&self) -> u32;
 }
-
+#[derive(Debug)]
 struct Node<T: LocalRemoteMR> {
     fa: Arc<MemoryRegion<T>>,
     root: Arc<MemoryRegion<T>>,
 }
 
+#[derive(Debug)]
 enum MemoryRegionKind<T: LocalRemoteMR> {
     Root(T),
     Node(Node<T>),
@@ -40,20 +42,35 @@ impl<T: LocalRemoteMR> MemoryRegionKind<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct MemoryRegion<T: LocalRemoteMR> {
     addr: usize,
     len: usize,
     kind: MemoryRegionKind<T>,
-    sub: Mutex<Vec<Range<usize>>>,
+    sub: SubMemoryRegion,
 }
 
 impl<T: LocalRemoteMR> MemoryRegion<T> {
-    fn new(addr: usize, len: usize, t: T) -> Self {
+    fn new_root(addr: usize, len: usize, t: T) -> Self {
         Self {
             addr,
             len,
             kind: MemoryRegionKind::Root(t),
-            sub: Mutex::new(Vec::new()),
+            sub: SubMemoryRegion::new(len),
+        }
+    }
+
+    fn new_node(self: &Arc<Self>, addr: usize, len: usize) -> Self {
+        let new_node = Node {
+            fa: self.clone(),
+            root: self.root(),
+        };
+        let kind = MemoryRegionKind::Node(new_node);
+        Self {
+            addr,
+            len,
+            kind,
+            sub: SubMemoryRegion::new(len),
         }
     }
 
@@ -85,68 +102,23 @@ impl<T: LocalRemoteMR> MemoryRegion<T> {
     }
 
     pub fn slice(self: &Arc<Self>, range: Range<usize>) -> io::Result<Self> {
-        if range.start >= range.end || range.end > self.len {
-            return Err(io::Error::new(io::ErrorKind::Other, "Invalid Range"));
-        }
-        if !self
-            .sub
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
-        {
-            return Err(io::Error::new(io::ErrorKind::Other, "No Enough Memory"));
-        }
-        self.sub.lock().unwrap().push(range.clone());
-        self.sub
-            .lock()
-            .unwrap()
-            .sort_by(|a, b| a.start.cmp(&b.start));
-        let new_node = Node {
-            fa: self.clone(),
-            root: self.root(),
-        };
-        let kind = MemoryRegionKind::Node(new_node);
-        Ok(Self {
-            addr: self.addr + range.start,
-            len: range.len(),
-            kind,
-            sub: Mutex::new(Vec::new()),
-        })
+        self.sub.slice(&range)?;
+        Ok(self.new_node(self.addr + range.start, range.len()))
     }
 
     pub fn alloc(self: &Arc<Self>, layout: Layout) -> io::Result<Self> {
-        let mut last = 0;
-        let mut ans = Err(io::Error::new(
-            io::ErrorKind::Other,
-            "No Enough Memory".to_string(),
-        ));
-        for range in self.sub.lock().unwrap().iter() {
-            if last + layout.size() <= range.start {
-                ans = Ok(last..last + layout.size());
-                break;
-            }
-            last = range.end
-        }
-        if last + layout.size() <= self.len {
-            ans = Ok(last..last + layout.size());
-        }
-        ans.map(|range| self.slice(range).unwrap())
+        let range = self.sub.alloc(layout)?;
+        Ok(self.new_node(self.addr + range.start, range.len()))
     }
 }
 
 impl<T: LocalRemoteMR> Drop for MemoryRegion<T> {
     fn drop(&mut self) {
         if let MemoryRegionKind::Node(node) = &self.kind {
-            let index = node
-                .fa
+            node.fa
                 .sub
-                .lock()
-                .unwrap()
-                .iter()
-                .position(|x| (self.addr - node.fa.addr..self.len + self.addr - node.fa.addr) == *x)
+                .free(self.addr - node.fa.addr..self.len + self.addr - node.fa.addr)
                 .unwrap();
-            node.fa.sub.lock().unwrap().remove(index);
         }
     }
 }
@@ -155,6 +127,14 @@ pub struct Local {
     inner_mr: NonNull<ibv_mr>,
     _pd: Arc<ProtectionDomain>,
     _data: Vec<u8>,
+}
+
+impl Debug for Local {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Local")
+            .field("inner_mr", &self.inner_mr)
+            .finish()
+    }
 }
 
 impl Drop for Local {
@@ -219,7 +199,7 @@ impl LocalMemoryRegion {
             _pd: pd.clone(),
             _data: data,
         };
-        Ok(MemoryRegion::new(addr, len, local))
+        Ok(MemoryRegion::new_root(addr, len, local))
     }
 }
 
@@ -249,11 +229,83 @@ impl RemoteMemoryRegion {
         let addr = token.addr;
         let len = token.len;
         let remote = Remote { token, agent };
+        let sub = SubMemoryRegion::new(len);
         Self {
             addr,
             len,
             kind: MemoryRegionKind::Root(remote),
-            sub: Mutex::new(Vec::new()),
+            sub,
         }
+    }
+}
+#[derive(Debug)]
+struct SubMemoryRegion {
+    length: usize,
+    sub: Mutex<Vec<Range<usize>>>,
+}
+
+impl SubMemoryRegion {
+    fn new(length: usize) -> Self {
+        Self {
+            sub: Mutex::new(Vec::new()),
+            length,
+        }
+    }
+
+    fn get_slice(mut locked_sub: MutexGuard<Vec<Range<usize>>>, range: &Range<usize>) {
+        let pos = locked_sub
+            .binary_search_by(|r| r.start.cmp(&range.start))
+            .err()
+            .unwrap();
+        locked_sub.insert(pos, range.clone());
+    }
+
+    fn slice(&self, range: &Range<usize>) -> io::Result<()> {
+        if range.start >= range.end || range.end > self.length {
+            return Err(io::Error::new(io::ErrorKind::Other, "Invalid Range"));
+        }
+        let locked_sub = self.sub.lock().unwrap();
+        if !locked_sub
+            .iter()
+            .all(|sub_range| range.end <= sub_range.start || range.start >= sub_range.end)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Memory slice Has been used",
+            ));
+        }
+        Self::get_slice(locked_sub, range);
+        Ok(())
+    }
+
+    fn alloc(&self, layout: Layout) -> io::Result<Range<usize>> {
+        let mut last = 0;
+        let locked_sub = self.sub.lock().unwrap();
+        let mut ans = Err(io::Error::new(
+            io::ErrorKind::Other,
+            "No Enough Memory".to_string(),
+        ));
+        for range in locked_sub.iter() {
+            if last + layout.size() <= range.start {
+                ans = Ok(last..last + layout.size());
+                break;
+            }
+            last = range.end
+        }
+        if ans.is_err() && last + layout.size() <= self.length {
+            ans = Ok(last..last + layout.size());
+        }
+        let ans = ans?;
+        Self::get_slice(locked_sub, &ans);
+        Ok(ans)
+    }
+
+    fn free(&self, range: Range<usize>) -> io::Result<()> {
+        let mut locked_sub = self.sub.lock().unwrap();
+        let pos = locked_sub
+            .binary_search_by(|r| r.start.cmp(&range.start))
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid Range".to_string()))?;
+        locked_sub.remove(pos);
+        Ok(())
     }
 }
