@@ -15,7 +15,7 @@ pub use agent::*;
 pub use completion_queue::*;
 pub use context::*;
 pub use event_channel::*;
-use event_listener::{EventListener, WCError};
+use event_listener::EventListener;
 pub use gid::*;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;

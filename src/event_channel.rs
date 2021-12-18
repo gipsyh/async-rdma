@@ -9,7 +9,7 @@ pub struct EventChannel {
 }
 
 impl EventChannel {
-    pub(crate) fn as_ptr(&self) -> *mut ibv_comp_channel {
+    pub fn as_ptr(&self) -> *mut ibv_comp_channel {
         self.inner_ec.as_ptr()
     }
 

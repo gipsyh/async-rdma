@@ -1,6 +1,6 @@
 use crate::{
-    event_listener::{EventListener, WCError},
-    Gid, LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion,
+    event_listener::EventListener, Gid, LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion,
+    WCError, WorkRequestId,
 };
 use rdma_sys::{
     ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
@@ -211,7 +211,7 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_send(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
+    fn post_send(&self, lm: &LocalMemoryRegion, wr_id: WorkRequestId) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
@@ -219,7 +219,7 @@ impl QueuePair {
         sge.length = lm.length() as u32;
         sge.lkey = lm.lkey();
         sr.next = std::ptr::null_mut();
-        sr.wr_id = wr_id;
+        sr.wr_id = wr_id.into();
         sr.sg_list = &mut sge;
         sr.num_sge = 1;
         sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
@@ -232,7 +232,7 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_receive(&self, lm: &LocalMemoryRegion, wr_id: u64) -> io::Result<()> {
+    fn post_receive(&self, lm: &LocalMemoryRegion, wr_id: WorkRequestId) -> io::Result<()> {
         let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
@@ -240,7 +240,7 @@ impl QueuePair {
         sge.length = lm.length() as u32;
         sge.lkey = lm.lkey();
         rr.next = std::ptr::null_mut();
-        rr.wr_id = wr_id;
+        rr.wr_id = wr_id.into();
         rr.sg_list = &mut sge;
         rr.num_sge = 1;
         self.event_listener.cq.req_notify(false).unwrap();
@@ -256,7 +256,7 @@ impl QueuePair {
         lm: &LocalMemoryRegion,
         rm: &RemoteMemoryRegion,
         opcode: u32,
-        wr_id: u64,
+        wr_id: WorkRequestId,
     ) -> io::Result<()> {
         let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
         let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
@@ -265,7 +265,7 @@ impl QueuePair {
         sge.length = lm.length() as u32;
         sge.lkey = lm.lkey();
         sr.next = std::ptr::null_mut();
-        sr.wr_id = wr_id;
+        sr.wr_id = wr_id.into();
         sr.sg_list = &mut sge;
         sr.num_sge = 1;
         sr.opcode = opcode;
