@@ -2,7 +2,6 @@ use crate::{
     event_listener::{EventListener, WCError},
     Gid, LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion,
 };
-use log::debug;
 use rdma_sys::{
     ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
@@ -15,6 +14,7 @@ use std::{
     ptr::{self, NonNull},
     sync::Arc,
 };
+use tracing::debug;
 
 struct QueuePairInitAttr {
     qp_init_attr_inner: rdma_sys::ibv_qp_init_attr,

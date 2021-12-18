@@ -17,7 +17,6 @@ pub use context::*;
 pub use event_channel::*;
 use event_listener::{EventListener, WCError};
 pub use gid::*;
-use log::debug;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;
 pub use protection_domain::*;
@@ -29,6 +28,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
+use tracing::debug;
 
 pub struct RdmaBuilder {
     dev_name: Option<String>,

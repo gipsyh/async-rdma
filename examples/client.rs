@@ -1,5 +1,6 @@
 use async_rdma::Rdma;
-use log::debug;
+use tracing::debug;
+
 use std::{alloc::Layout, sync::Arc, time::Duration};
 
 async fn example1(rdma: &Rdma) {
@@ -28,7 +29,7 @@ async fn example3(rdma: &Rdma) {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     debug!("client start");
     let rdma = Rdma::connect("127.0.0.1:5555").await.unwrap();
     example1(&rdma).await;
