@@ -1,4 +1,7 @@
-use crate::*;
+use crate::{
+    completion_queue::CompletionQueue, event_channel::EventChannel, gid::Gid,
+    protection_domain::ProtectionDomain,
+};
 use rdma_sys::{
     ibv_close_device, ibv_context, ibv_free_device_list, ibv_get_device_list, ibv_get_device_name,
     ibv_open_device, ibv_port_attr, ibv_query_gid,

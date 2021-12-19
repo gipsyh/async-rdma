@@ -9,13 +9,12 @@ mod memory_window;
 mod mr_allocator;
 mod protection_domain;
 mod queue_pair;
+mod work_request;
 
 use agent::*;
 use completion_queue::*;
 use context::*;
-use event_channel::*;
 use event_listener::EventListener;
-use gid::*;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;
 use protection_domain::*;

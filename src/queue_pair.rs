@@ -1,11 +1,12 @@
 use crate::{
-    event_listener::EventListener, Gid, LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion,
-    WCError, WorkRequestId,
+    event_listener::EventListener,
+    gid::Gid,
+    work_request::{RecvWr, SendWr},
+    LocalMemoryRegion, ProtectionDomain, RemoteMemoryRegion, WCError, WorkRequestId,
 };
 use rdma_sys::{
     ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
-    ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_flags,
-    ibv_send_wr, ibv_sge, ibv_wr_opcode,
+    ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_wr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -211,69 +212,54 @@ impl QueuePair {
         Ok(())
     }
 
-    fn post_send(&self, lm: &LocalMemoryRegion, wr_id: WorkRequestId) -> io::Result<()> {
-        let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
-        let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
+    fn submit_send(&self, lms: Vec<&LocalMemoryRegion>, wr_id: WorkRequestId) -> io::Result<()> {
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = lm.as_ptr() as u64;
-        sge.length = lm.length() as u32;
-        sge.lkey = lm.lkey();
-        sr.next = std::ptr::null_mut();
-        sr.wr_id = wr_id.into();
-        sr.sg_list = &mut sge;
-        sr.num_sge = 1;
-        sr.opcode = ibv_wr_opcode::IBV_WR_SEND;
-        sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
+        let mut sr = SendWr::new_send(lms, wr_id);
         self.event_listener.cq.req_notify(false).unwrap();
-        let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_send(self.as_ptr(), sr.as_mut(), &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
         Ok(())
     }
 
-    fn post_receive(&self, lm: &LocalMemoryRegion, wr_id: WorkRequestId) -> io::Result<()> {
-        let mut rr = unsafe { std::mem::zeroed::<ibv_recv_wr>() };
-        let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
+    fn submit_receive(&self, lms: Vec<&LocalMemoryRegion>, wr_id: WorkRequestId) -> io::Result<()> {
+        let mut rr = RecvWr::new_recv(lms, wr_id);
         let mut bad_wr = std::ptr::null_mut::<ibv_recv_wr>();
-        sge.addr = lm.as_ptr() as u64;
-        sge.length = lm.length() as u32;
-        sge.lkey = lm.lkey();
-        rr.next = std::ptr::null_mut();
-        rr.wr_id = wr_id.into();
-        rr.sg_list = &mut sge;
-        rr.num_sge = 1;
         self.event_listener.cq.req_notify(false).unwrap();
-        let errno = unsafe { ibv_post_recv(self.as_ptr(), &mut rr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_recv(self.as_ptr(), rr.as_mut(), &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
         Ok(())
     }
 
-    fn read_write(
+    fn submit_read(
         &self,
-        lm: &LocalMemoryRegion,
+        lms: Vec<&LocalMemoryRegion>,
         rm: &RemoteMemoryRegion,
-        opcode: u32,
         wr_id: WorkRequestId,
     ) -> io::Result<()> {
-        let mut sr = unsafe { std::mem::zeroed::<ibv_send_wr>() };
-        let mut sge = unsafe { std::mem::zeroed::<ibv_sge>() };
         let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
-        sge.addr = lm.as_ptr() as u64;
-        sge.length = lm.length() as u32;
-        sge.lkey = lm.lkey();
-        sr.next = std::ptr::null_mut();
-        sr.wr_id = wr_id.into();
-        sr.sg_list = &mut sge;
-        sr.num_sge = 1;
-        sr.opcode = opcode;
-        sr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
-        sr.wr.rdma.remote_addr = rm.as_ptr() as u64;
-        sr.wr.rdma.rkey = rm.rkey();
+        let mut sr = SendWr::new_read(lms, wr_id, rm);
         self.event_listener.cq.req_notify(false).unwrap();
-        let errno = unsafe { ibv_post_send(self.as_ptr(), &mut sr, &mut bad_wr) };
+        let errno = unsafe { ibv_post_send(self.as_ptr(), sr.as_mut(), &mut bad_wr) };
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        Ok(())
+    }
+
+    fn submit_write(
+        &self,
+        lms: Vec<&LocalMemoryRegion>,
+        rm: &RemoteMemoryRegion,
+        wr_id: WorkRequestId,
+    ) -> io::Result<()> {
+        let mut bad_wr = std::ptr::null_mut::<ibv_send_wr>();
+        let mut sr = SendWr::new_write(lms, wr_id, rm);
+        self.event_listener.cq.req_notify(false).unwrap();
+        let errno = unsafe { ibv_post_send(self.as_ptr(), sr.as_mut(), &mut bad_wr) };
         if errno != 0 {
             return Err(io::Error::from_raw_os_error(errno));
         }
@@ -282,7 +268,7 @@ impl QueuePair {
 
     pub async fn send(&self, lm: &LocalMemoryRegion) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.post_send(lm, wr_id).unwrap();
+        self.submit_send(vec![lm], wr_id).unwrap();
         resp_rx
             .recv()
             .await
@@ -293,7 +279,7 @@ impl QueuePair {
 
     pub async fn receive(&self, lm: &LocalMemoryRegion) -> Result<usize, WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.post_receive(lm, wr_id).unwrap();
+        self.submit_receive(vec![lm], wr_id).unwrap();
         let wc = resp_rx.recv().await.unwrap();
         wc.err()
     }
@@ -304,8 +290,7 @@ impl QueuePair {
         rm: &RemoteMemoryRegion,
     ) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_READ, wr_id)
-            .unwrap();
+        self.submit_read(vec![lm], rm, wr_id).unwrap();
         resp_rx
             .recv()
             .await
@@ -320,8 +305,7 @@ impl QueuePair {
         rm: &RemoteMemoryRegion,
     ) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.read_write(lm, rm, ibv_wr_opcode::IBV_WR_RDMA_WRITE, wr_id)
-            .unwrap();
+        self.submit_write(vec![lm], rm, wr_id).unwrap();
         resp_rx
             .recv()
             .await
