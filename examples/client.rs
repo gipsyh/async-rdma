@@ -1,7 +1,6 @@
 use async_rdma::Rdma;
-use tracing::debug;
-
 use std::{alloc::Layout, sync::Arc, time::Duration};
+use tracing::debug;
 
 async fn example1(rdma: &Rdma) {
     let rmr = Arc::new(rdma.alloc_remote_mr(Layout::new::<i32>()).await.unwrap());

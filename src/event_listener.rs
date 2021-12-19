@@ -1,7 +1,7 @@
 use crate::completion_queue::{CompletionQueue, WorkCompletion, WorkRequestId};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::{os::unix::prelude::AsRawFd, sync::Arc};
+use tokio::{io::unix::AsyncFd, sync::mpsc};
 
 /// Provided by the requester and used by the manager task to send
 /// the command response back to the requester.
@@ -25,34 +25,18 @@ impl EventListener {
     }
 
     pub fn start(cq: Arc<CompletionQueue>, req_map: ReqMap) -> tokio::task::JoinHandle<()> {
-        tokio::task::spawn_blocking(move || {
-            // let async_fd = AsyncFd::new(cq.event_channel().as_raw_fd()).unwrap();
+        tokio::task::spawn(async move {
+            let async_fd = AsyncFd::new(cq.event_channel().as_raw_fd()).unwrap();
             loop {
-                // let mut guard = async_fd.readable().await.unwrap();
-                // let res = match guard.try_io(|_| Self::get_res(&cq)) {
-                //     Ok(result) => result,
-                //     Err(_would_block) => {
-                //         continue;
-                //     }
-                // };
-                let wc = cq.poll_single();
-                match wc {
-                    Ok(wc) => {
-                        match req_map.remove_with_guard(&wc.wr_id(), &pin()) {
-                            Some(val) => {
-                                let _ = val
-                                    .clone()
-                                    .try_send(wc)
-                                    .map_err(|err| panic!("TODO:process try_send err : {:?}", err));
-                            }
-                            None => {
-                                panic!();
-                            }
-                        };
-                    }
-                    _ => {
-                        continue;
-                    }
+                async_fd.readable().await.unwrap().clear_ready();
+                cq.req_notify(false).unwrap();
+                while let Ok(wc) = cq.poll_single() {
+                    req_map
+                        .remove_with_guard(&wc.wr_id(), &pin())
+                        .unwrap()
+                        .clone()
+                        .try_send(wc)
+                        .unwrap();
                 }
             }
         })

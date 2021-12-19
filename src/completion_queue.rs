@@ -70,7 +70,7 @@ impl CompletionQueue {
                 assert_eq!(ans.len(), poll_res);
                 Ok(ans)
             }
-            Ordering::Less => Err(io::Error::last_os_error()),
+            Ordering::Less => Err(io::Error::new(io::ErrorKind::WouldBlock, "")),
         }
     }
 
