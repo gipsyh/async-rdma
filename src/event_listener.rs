@@ -1,18 +1,15 @@
-use crate::{CompletionQueue, WCError, WorkRequestId};
+use crate::{CompletionQueue, WorkCompletion, WorkRequestId};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
-use std::io;
-use std::os::unix::prelude::AsRawFd;
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
 /// Provided by the requester and used by the manager task to send
 /// the command response back to the requester.
-type Responder<T> = mpsc::Sender<Result<T, WCError>>;
-type ReqMap<T> = Arc<LockFreeCuckooHash<WorkRequestId, Responder<T>>>;
+type Responder = mpsc::Sender<WorkCompletion>;
+type ReqMap = Arc<LockFreeCuckooHash<WorkRequestId, Responder>>;
 pub struct EventListener {
     pub cq: Arc<CompletionQueue>,
-    req_map: ReqMap<usize>,
+    req_map: ReqMap,
     _poller_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -27,38 +24,33 @@ impl EventListener {
         }
     }
 
-    pub fn start(cq: Arc<CompletionQueue>, req_map: ReqMap<usize>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let async_fd = AsyncFd::new(cq.event_channel().as_raw_fd()).unwrap();
+    pub fn start(cq: Arc<CompletionQueue>, req_map: ReqMap) -> tokio::task::JoinHandle<()> {
+        tokio::task::spawn_blocking(move || {
+            // let async_fd = AsyncFd::new(cq.event_channel().as_raw_fd()).unwrap();
             loop {
-                let mut guard = async_fd.readable().await.unwrap();
-                let res = match guard.try_io(|_| Self::get_res(&cq)) {
-                    Ok(result) => result,
-                    Err(_would_block) => {
-                        continue;
-                    }
-                };
-                match res {
-                    Ok((wr_id, res)) => {
-                        let map_guard = pin();
-                        let _ = match req_map.remove_with_guard(&wr_id, &map_guard) {
+                // let mut guard = async_fd.readable().await.unwrap();
+                // let res = match guard.try_io(|_| Self::get_res(&cq)) {
+                //     Ok(result) => result,
+                //     Err(_would_block) => {
+                //         continue;
+                //     }
+                // };
+                let wc = cq.poll_single();
+                match wc {
+                    Ok(wc) => {
+                        match req_map.remove_with_guard(&wc.wr_id(), &pin()) {
                             Some(val) => {
                                 let _ = val
                                     .clone()
-                                    .try_send(res)
+                                    .try_send(wc)
                                     .map_err(|err| panic!("TODO:process try_send err : {:?}", err));
                             }
                             None => {
-                                println!(
-                                    "Unknown wr_id :{:?}. Maybe get event triggered by other API",
-                                    wr_id
-                                );
-                                continue;
+                                panic!();
                             }
                         };
                     }
                     _ => {
-                        println!("res : {:?}", res);
                         continue;
                     }
                 }
@@ -66,7 +58,7 @@ impl EventListener {
         })
     }
 
-    pub fn register(&self) -> (WorkRequestId, mpsc::Receiver<Result<usize, WCError>>) {
+    pub fn register(&self) -> (WorkRequestId, mpsc::Receiver<WorkCompletion>) {
         let (tx, rx) = mpsc::channel(2);
         let mut wr_id = WorkRequestId::new();
         loop {
@@ -76,10 +68,5 @@ impl EventListener {
             wr_id = WorkRequestId::new();
         }
         (wr_id, rx)
-    }
-
-    fn get_res(cq: &CompletionQueue) -> io::Result<(WorkRequestId, Result<usize, WCError>)> {
-        let wc = cq.poll_single()?;
-        Ok((wc.wr_id(), wc.err()))
     }
 }

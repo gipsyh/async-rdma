@@ -8,6 +8,7 @@ use rdma_sys::{
 };
 use std::{
     cmp::Ordering,
+    fmt::Debug,
     io, mem,
     ptr::{self, NonNull},
     time::{SystemTime, UNIX_EPOCH},
@@ -81,7 +82,7 @@ impl CompletionQueue {
             .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, ""))
     }
 
-    pub(crate) fn event_channel(&self) -> &EventChannel {
+    pub fn event_channel(&self) -> &EventChannel {
         self.ec.as_ref().unwrap()
     }
 }
@@ -117,6 +118,14 @@ impl WorkCompletion {
         } else {
             Err(WCError::from_u32(self.inner_wc.status).unwrap())
         }
+    }
+}
+
+impl Debug for WorkCompletion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkCompletion")
+            .field("wr_id", &self.wr_id())
+            .finish()
     }
 }
 

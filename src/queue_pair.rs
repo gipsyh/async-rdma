@@ -287,13 +287,15 @@ impl QueuePair {
             .recv()
             .await
             .unwrap()
+            .err()
             .map(|sz| assert_eq!(sz, lm.length()))
     }
 
     pub async fn receive(&self, lm: &LocalMemoryRegion) -> Result<usize, WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
         self.post_receive(lm, wr_id).unwrap();
-        resp_rx.recv().await.unwrap()
+        let wc = resp_rx.recv().await.unwrap();
+        wc.err()
     }
 
     pub async fn read(
@@ -308,6 +310,7 @@ impl QueuePair {
             .recv()
             .await
             .unwrap()
+            .err()
             .map(|sz| assert_eq!(sz, lm.length()))
     }
 
@@ -323,6 +326,7 @@ impl QueuePair {
             .recv()
             .await
             .unwrap()
+            .err()
             .map(|sz| assert_eq!(sz, lm.length()))
     }
 }

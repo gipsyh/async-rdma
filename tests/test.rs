@@ -62,3 +62,46 @@ mod test1 {
         test_server_client("127.0.0.1:8000", server, client)
     }
 }
+
+mod test2 {
+    use crate::*;
+    use std::{alloc::Layout, sync::Arc};
+
+    async fn server(rdma: Rdma) -> io::Result<()> {
+        let rdma = Arc::new(rdma);
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let rdma_clone = rdma.clone();
+            handles.push(tokio::spawn(async move {
+                let lm = rdma_clone.alloc_local_mr(Layout::new::<i32>()).unwrap();
+                let sz = rdma_clone.receive(&lm).await.unwrap();
+                assert_eq!(sz, 4);
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        Ok(())
+    }
+
+    async fn client(rdma: Rdma) -> io::Result<()> {
+        let rdma = Arc::new(rdma);
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let rdma_clone = rdma.clone();
+            handles.push(tokio::spawn(async move {
+                let lm = rdma_clone.alloc_local_mr(Layout::new::<i32>()).unwrap();
+                rdma_clone.send(&lm).await.unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test() -> io::Result<()> {
+        test_server_client("127.0.0.1:8001", server, client)
+    }
+}
