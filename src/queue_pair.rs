@@ -268,22 +268,63 @@ impl QueuePair {
         Ok(())
     }
 
-    pub async fn send(&self, lm: &LocalMemoryRegion) -> Result<(), WCError> {
+    pub async fn send_sge(&self, lms: Vec<&LocalMemoryRegion>) -> Result<(), WCError> {
         let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.submit_send(vec![lm], wr_id).unwrap();
+        let len: usize = lms.iter().map(|lm| lm.length()).sum();
+        self.submit_send(lms, wr_id).unwrap();
         resp_rx
             .recv()
             .await
             .unwrap()
             .err()
-            .map(|sz| assert_eq!(sz, lm.length()))
+            .map(|sz| assert_eq!(sz, len))
+    }
+
+    pub async fn receive_sge(&self, lms: Vec<&LocalMemoryRegion>) -> Result<usize, WCError> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        self.submit_receive(lms, wr_id).unwrap();
+        let wc = resp_rx.recv().await.unwrap();
+        wc.err()
+    }
+
+    pub async fn read_sge(
+        &self,
+        lms: Vec<&LocalMemoryRegion>,
+        rm: &RemoteMemoryRegion,
+    ) -> Result<(), WCError> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let len: usize = lms.iter().map(|lm| lm.length()).sum();
+        self.submit_read(lms, rm, wr_id).unwrap();
+        resp_rx
+            .recv()
+            .await
+            .unwrap()
+            .err()
+            .map(|sz| assert_eq!(sz, len))
+    }
+
+    pub async fn write_sge(
+        &self,
+        lms: Vec<&LocalMemoryRegion>,
+        rm: &RemoteMemoryRegion,
+    ) -> Result<(), WCError> {
+        let (wr_id, mut resp_rx) = self.event_listener.register();
+        let len: usize = lms.iter().map(|lm| lm.length()).sum();
+        self.submit_write(lms, rm, wr_id).unwrap();
+        resp_rx
+            .recv()
+            .await
+            .unwrap()
+            .err()
+            .map(|sz| assert_eq!(sz, len))
+    }
+
+    pub async fn send(&self, lm: &LocalMemoryRegion) -> Result<(), WCError> {
+        self.send_sge(vec![lm]).await
     }
 
     pub async fn receive(&self, lm: &LocalMemoryRegion) -> Result<usize, WCError> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.submit_receive(vec![lm], wr_id).unwrap();
-        let wc = resp_rx.recv().await.unwrap();
-        wc.err()
+        self.receive_sge(vec![lm]).await
     }
 
     pub async fn read(
@@ -291,14 +332,7 @@ impl QueuePair {
         lm: &mut LocalMemoryRegion,
         rm: &RemoteMemoryRegion,
     ) -> Result<(), WCError> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.submit_read(vec![lm], rm, wr_id).unwrap();
-        resp_rx
-            .recv()
-            .await
-            .unwrap()
-            .err()
-            .map(|sz| assert_eq!(sz, lm.length()))
+        self.read_sge(vec![lm], rm).await
     }
 
     pub async fn write(
@@ -306,14 +340,7 @@ impl QueuePair {
         lm: &LocalMemoryRegion,
         rm: &RemoteMemoryRegion,
     ) -> Result<(), WCError> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.submit_write(vec![lm], rm, wr_id).unwrap();
-        resp_rx
-            .recv()
-            .await
-            .unwrap()
-            .err()
-            .map(|sz| assert_eq!(sz, lm.length()))
+        self.write_sge(vec![lm], rm).await
     }
 }
 
