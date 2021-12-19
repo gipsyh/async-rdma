@@ -1,57 +1,212 @@
 use crate::{
-    mr_allocator::MRAllocator, rdma_stream::RdmaStream, LocalMemoryRegion, MemoryRegionToken,
-    QueuePair, RemoteMemoryRegion,
-};
-use async_bincode::{AsyncBincodeStream, AsyncDestination};
-use futures::{
-    stream::{SplitSink, SplitStream, StreamExt},
-    SinkExt,
+    mr_allocator::MRAllocator, LocalMemoryRegion, MemoryRegionToken, QueuePair, RemoteMemoryRegion,
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::{alloc::Layout, any::Any, collections::HashMap, io, sync::Arc};
+use std::{
+    alloc::Layout,
+    any::Any,
+    collections::HashMap,
+    io::{self, Cursor},
+    sync::Arc,
+};
 use tokio::{
-    io::AsyncReadExt,
     sync::{
         mpsc::{channel, Receiver, Sender},
         oneshot, Mutex,
     },
     task::JoinHandle,
 };
+use tracing::debug;
 
 pub struct Agent {
-    _qp: Arc<QueuePair>,
-    stream_write: Arc<Mutex<StreamWrite<RdmaStream>>>,
-    response_waits: Arc<Mutex<ResponseWaitsMap>>,
-    mr_own: Arc<Mutex<HashMap<MemoryRegionToken, Arc<LocalMemoryRegion>>>>,
+    inner: Arc<AgentInner>,
     mr_recv: Mutex<Receiver<io::Result<Arc<dyn Any + Send + Sync>>>>,
-    allocator: Arc<MRAllocator>,
-    _handle: Option<JoinHandle<io::Result<()>>>,
+    _handle: JoinHandle<io::Result<()>>,
 }
 
 impl Agent {
-    pub fn new(stream: RdmaStream, qp: Arc<QueuePair>, allocator: Arc<MRAllocator>) -> Arc<Self> {
-        let stream = AsyncBincodeStream::<_, Message, Message, _>::from(stream).for_async();
-        let (stream_write, stream_read) = stream.split();
-        let stream_write = Arc::new(Mutex::new(stream_write));
+    pub fn new(qp: Arc<QueuePair>, allocator: Arc<MRAllocator>) -> Self {
         let response_waits = Arc::new(Mutex::new(HashMap::new()));
         let mr_own = Arc::new(Mutex::new(HashMap::new()));
         let (mr_send, mr_recv) = channel(1024);
         let mr_recv = Mutex::new(mr_recv);
-        let ans = Arc::new(Self {
-            _handle: None,
-            stream_write,
-            mr_own,
+        let inner = Arc::new(AgentInner {
+            qp,
             response_waits,
-            mr_recv,
+            mr_own,
             allocator,
-            _qp: qp,
         });
-        let _handle = tokio::spawn(listen_main(ans.clone(), stream_read, mr_send));
-        // ans.handle = Some(handle);
-        ans
+        let _handle = AgentThread::run(inner.clone(), mr_send);
+        Self {
+            inner,
+            mr_recv,
+            _handle,
+        }
     }
 
+    pub async fn alloc_mr(&self, layout: Layout) -> io::Result<RemoteMemoryRegion> {
+        self.inner.alloc_mr(layout).await
+    }
+
+    pub async fn _release_mr(&self, token: MemoryRegionToken) -> io::Result<()> {
+        self.inner.release_mr(token).await
+    }
+
+    pub async fn send_mr(&self, mr: Arc<dyn Any + Send + Sync>) -> io::Result<()> {
+        let request = if mr.is::<LocalMemoryRegion>() {
+            let mr = mr.downcast::<LocalMemoryRegion>().unwrap();
+            let ans = SendMRKind::Local(mr.token());
+            self.inner.mr_own.lock().await.insert(mr.token(), mr);
+            ans
+        } else {
+            let mr = mr.downcast::<RemoteMemoryRegion>().unwrap();
+            SendMRKind::Remote(mr.token())
+        };
+        let request = Request {
+            request_id: RequestId::new(),
+            kind: RequestKind::SendMR(SendMRRequest { kind: request }),
+        };
+        let _response = self.inner.send_request(request).await.unwrap();
+        Ok(())
+    }
+
+    pub async fn receive_mr(&self) -> io::Result<Arc<dyn Any + Send + Sync>> {
+        self.mr_recv.lock().await.recv().await.unwrap()
+    }
+
+    pub async fn post_send(&self, _lm: &LocalMemoryRegion) -> io::Result<()> {
+        todo!()
+    }
+
+    pub async fn post_receive(&self, _lm: &LocalMemoryRegion) -> io::Result<usize> {
+        todo!()
+    }
+}
+
+struct AgentThread {
+    inner: Arc<AgentInner>,
+    mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
+}
+
+impl AgentThread {
+    fn run(
+        inner: Arc<AgentInner>,
+        mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
+    ) -> JoinHandle<io::Result<()>> {
+        let agent = Arc::new(Self { inner, mr_send });
+        tokio::spawn(agent.main())
+    }
+
+    async fn main(self: Arc<Self>) -> io::Result<()> {
+        let buf = self
+            .inner
+            .allocator
+            .alloc(Layout::new::<[u8; BUF_SIZE]>())
+            .unwrap();
+        loop {
+            debug!("receiving message");
+            let sz = self.inner.qp.receive(&buf).await.unwrap();
+            debug!("received message, size = {}", sz);
+            let message = bincode::deserialize(&buf.as_slice()[0..sz]).unwrap();
+            match message {
+                Message::Request(request) => {
+                    tokio::spawn(self.clone().handle_request(request));
+                }
+                Message::Response(response) => {
+                    tokio::spawn(self.clone().handle_response(response));
+                }
+            }
+        }
+    }
+
+    async fn handle_request(self: Arc<Self>, request: Request) {
+        debug!("handle request");
+        let response = match request.kind {
+            RequestKind::AllocMR(param) => {
+                let mr = Arc::new(
+                    self.inner
+                        .allocator
+                        .alloc(Layout::from_size_align(param.size, param.align).unwrap())
+                        .unwrap(),
+                );
+                let token = mr.token();
+                let response = AllocMRResponse { token };
+                self.inner.mr_own.lock().await.insert(token, mr);
+                ResponseKind::AllocMR(response)
+            }
+            RequestKind::ReleaseMR(param) => {
+                assert!(self
+                    .inner
+                    .mr_own
+                    .lock()
+                    .await
+                    .remove(&param.token)
+                    .is_some());
+                ResponseKind::ReleaseMR(ReleaseMRResponse { status: 0 })
+            }
+            RequestKind::SendMR(param) => {
+                match param.kind {
+                    SendMRKind::Local(token) => {
+                        assert!(self
+                            .mr_send
+                            .send(Ok(Arc::new(RemoteMemoryRegion::new_from_token(
+                                token,
+                                self.inner.clone()
+                            ))))
+                            .await
+                            .is_ok());
+                    }
+                    SendMRKind::Remote(token) => {
+                        let mr = self.inner.mr_own.lock().await.get(&token).unwrap().clone();
+                        assert!(self.mr_send.send(Ok(mr)).await.is_ok());
+                    }
+                }
+                ResponseKind::SendMR(SendMRResponse {})
+            }
+            RequestKind::ReceiveMR => todo!(),
+            RequestKind::SendData => todo!(),
+            RequestKind::ReceiveData => todo!(),
+        };
+        let response = Response {
+            request_id: request.request_id,
+            kind: response,
+        };
+        let mut buf = self
+            .inner
+            .allocator
+            .alloc(Layout::new::<[u8; BUF_SIZE]>())
+            .unwrap();
+        let cursor = Cursor::new(buf.as_mut_slice());
+        bincode::serialize_into(cursor, &Message::Response(response)).unwrap();
+        self.inner.qp.send(&buf).await.unwrap();
+        debug!("handle request done");
+    }
+
+    async fn handle_response(self: Arc<Self>, response: Response) {
+        debug!("handle response");
+        let sender = self
+            .inner
+            .response_waits
+            .lock()
+            .await
+            .remove(&response.request_id)
+            .unwrap();
+        match sender.send(Ok(response.kind)) {
+            Ok(_) => (),
+            Err(_) => todo!(),
+        }
+    }
+}
+
+pub struct AgentInner {
+    qp: Arc<QueuePair>,
+    response_waits: Arc<Mutex<ResponseWaitsMap>>,
+    mr_own: Arc<Mutex<HashMap<MemoryRegionToken, Arc<LocalMemoryRegion>>>>,
+    allocator: Arc<MRAllocator>,
+}
+
+impl AgentInner {
     pub async fn alloc_mr(self: &Arc<Self>, layout: Layout) -> io::Result<RemoteMemoryRegion> {
         let request = AllocMRRequest {
             size: layout.size(),
@@ -81,57 +236,22 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn send_mr(&self, mr: Arc<dyn Any + Send + Sync>) -> io::Result<()> {
-        let request = if mr.is::<LocalMemoryRegion>() {
-            let mr = mr.downcast::<LocalMemoryRegion>().unwrap();
-            let ans = SendMRKind::Local(mr.token());
-            self.mr_own.lock().await.insert(mr.token(), mr);
-            ans
-        } else {
-            let mr = mr.downcast::<RemoteMemoryRegion>().unwrap();
-            SendMRKind::Remote(mr.token())
-        };
-        let request = Request {
-            request_id: RequestId::new(),
-            kind: RequestKind::SendMR(SendMRRequest { kind: request }),
-        };
-        let _response = self.send_request(request).await.unwrap();
-        Ok(())
-    }
-
-    pub async fn receive_mr(&self) -> io::Result<Arc<dyn Any + Send + Sync>> {
-        self.mr_recv.lock().await.recv().await.unwrap()
-    }
-
-    pub async fn post_send(&self) -> io::Result<()> {
-        todo!()
-    }
-
-    pub async fn post_receive(&self) -> io::Result<()> {
-        todo!()
-    }
-
     async fn send_request(&self, request: Request) -> io::Result<ResponseKind> {
         let (send, recv) = oneshot::channel();
         self.response_waits
             .lock()
             .await
             .insert(request.request_id, send);
-        self.stream_write
-            .lock()
-            .await
-            .send(Message::Request(request))
-            .await
-            .unwrap();
-        recv.await.unwrap()
+        let mut buf = self.allocator.alloc(Layout::new::<[u8; 512]>()).unwrap();
+        let cursor = Cursor::new(buf.as_mut_slice());
+        bincode::serialize_into(cursor, &Message::Request(request)).unwrap();
+        self.qp.send(&buf).await.unwrap();
+        let ans = recv.await.unwrap();
+        ans
     }
 }
 
-type Stream<S> = AsyncBincodeStream<S, Message, Message, AsyncDestination>;
-
-type StreamRead<SR> = SplitStream<Stream<SR>>;
-
-type StreamWrite<SW> = SplitSink<Stream<SW>, Message>;
+const BUF_SIZE: usize = 512;
 
 type ResponseWaitsMap = HashMap<RequestId, oneshot::Sender<io::Result<ResponseKind>>>;
 
@@ -221,91 +341,4 @@ struct Response {
 enum Message {
     Request(Request),
     Response(Response),
-}
-
-async fn handle_request(
-    agent: Arc<Agent>,
-    request: Request,
-    mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
-) {
-    let response = match request.kind {
-        RequestKind::AllocMR(param) => {
-            let mr = Arc::new(
-                agent
-                    .allocator
-                    .alloc(Layout::from_size_align(param.size, param.align).unwrap())
-                    .unwrap(),
-            );
-            let token = mr.token();
-            let response = AllocMRResponse { token };
-            agent.mr_own.lock().await.insert(token, mr);
-            ResponseKind::AllocMR(response)
-        }
-        RequestKind::ReleaseMR(param) => {
-            assert!(agent.mr_own.lock().await.remove(&param.token).is_some());
-            ResponseKind::ReleaseMR(ReleaseMRResponse { status: 0 })
-        }
-        RequestKind::SendMR(param) => {
-            match param.kind {
-                SendMRKind::Local(token) => {
-                    assert!(mr_send
-                        .send(Ok(Arc::new(RemoteMemoryRegion::new_from_token(
-                            token,
-                            agent.clone()
-                        ))))
-                        .await
-                        .is_ok());
-                }
-                SendMRKind::Remote(token) => {
-                    let mr = agent.mr_own.lock().await.get(&token).unwrap().clone();
-                    assert!(mr_send.send(Ok(mr)).await.is_ok());
-                }
-            }
-            ResponseKind::SendMR(SendMRResponse {})
-        }
-        RequestKind::ReceiveMR => todo!(),
-        RequestKind::SendData => todo!(),
-        RequestKind::ReceiveData => todo!(),
-    };
-    let response = Response {
-        request_id: request.request_id,
-        kind: response,
-    };
-    agent
-        .stream_write
-        .lock()
-        .await
-        .send(Message::Response(response))
-        .await
-        .unwrap();
-}
-
-async fn handle_response(response: Response, response_waits: Arc<Mutex<ResponseWaitsMap>>) {
-    let sender = response_waits
-        .lock()
-        .await
-        .remove(&response.request_id)
-        .unwrap();
-    match sender.send(Ok(response.kind)) {
-        Ok(_) => (),
-        Err(_) => todo!(),
-    }
-}
-
-async fn listen_main<SR: AsyncReadExt + Unpin>(
-    agent: Arc<Agent>,
-    mut stream_read: StreamRead<SR>,
-    mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
-) -> io::Result<()> {
-    loop {
-        let message = stream_read.next().await.unwrap().unwrap();
-        match message {
-            Message::Request(request) => {
-                tokio::spawn(handle_request(agent.clone(), request, mr_send.clone()));
-            }
-            Message::Response(response) => {
-                tokio::spawn(handle_response(response, agent.response_waits.clone()));
-            }
-        }
-    }
 }

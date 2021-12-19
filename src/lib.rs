@@ -9,19 +9,17 @@ mod memory_window;
 mod mr_allocator;
 mod protection_domain;
 mod queue_pair;
-mod rdma_stream;
 
-pub use agent::*;
-pub use completion_queue::*;
-pub use context::*;
-pub use event_channel::*;
+use agent::*;
+use completion_queue::*;
+use context::*;
+use event_channel::*;
 use event_listener::EventListener;
-pub use gid::*;
+use gid::*;
 pub use memory_region::*;
 use mr_allocator::MRAllocator;
-pub use protection_domain::*;
-pub use queue_pair::*;
-use rdma_stream::RdmaStream;
+use protection_domain::*;
+use queue_pair::*;
 use rdma_sys::ibv_access_flags;
 use std::{alloc::Layout, any::Any, io, sync::Arc};
 use tokio::{
@@ -69,7 +67,7 @@ pub struct Rdma {
     pd: Arc<ProtectionDomain>,
     allocator: Arc<MRAllocator>,
     qp: Arc<QueuePair>,
-    agent: Option<Arc<Agent>>,
+    agent: Option<Agent>,
 }
 
 impl Rdma {
@@ -108,17 +106,18 @@ impl Rdma {
     }
 
     pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
-        let res = self.qp.send(lm).await;
-        match res {
-            Err(WCError::RnrRetryExc) => {
-                panic!();
-            }
-            _ => res.map_err(|e| e.into()),
-        }
+        self.agent.as_ref().unwrap().post_send(lm).await
+        // let res = self.qp.send(lm).await;
+        // match res {
+        //     Err(WCError::RnrRetryExc) => {
+        //         panic!();
+        //     }
+        //     _ => res.map_err(|e| e.into()),
+        // }
     }
 
     pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
-        self.qp.receive(lm).await.map_err(|e| e.into())
+        self.agent.as_ref().unwrap().post_receive(lm).await
     }
 
     pub async fn read(
@@ -145,9 +144,7 @@ impl Rdma {
         stream.read_exact(endpoint.as_mut()).await?;
         let remote: QueuePairEndpoint = bincode::deserialize(&endpoint).unwrap();
         rdma.handshake(remote)?;
-        let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream, rdma.qp.clone(), rdma.allocator.clone());
-        rdma.agent = Some(agent);
+        rdma.agent = Some(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
         Ok(rdma)
     }
 
@@ -200,21 +197,15 @@ impl RdmaListener {
 
     pub async fn accept(&self) -> io::Result<Rdma> {
         let (mut stream, _) = self.tcp_listener.accept().await?;
-        debug!("tcp accepted");
         let mut rdma = RdmaBuilder::default().build()?;
         let mut remote = vec![0_u8; 22];
         stream.read_exact(remote.as_mut()).await?;
-        debug!("read stream done");
         let remote: QueuePairEndpoint = bincode::deserialize(&remote).unwrap();
-        debug!("remote qpe info : {:?}", remote);
         let local = bincode::serialize(&rdma.endpoint()).unwrap();
-        debug!("write local info {:?} into steam", &rdma.endpoint());
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
         debug!("handshake done");
-        let stream = RdmaStream::new(stream);
-        let agent = Agent::new(stream, rdma.qp.clone(), rdma.allocator.clone());
-        rdma.agent = Some(agent);
+        rdma.agent = Some(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
         Ok(rdma)
     }
 }

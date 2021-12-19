@@ -1,4 +1,4 @@
-use crate::{Agent, ProtectionDomain};
+use crate::{AgentInner, ProtectionDomain};
 use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -205,7 +205,7 @@ impl LocalMemoryRegion {
 
 pub struct Remote {
     token: MemoryRegionToken,
-    agent: Arc<Agent>,
+    agent: Arc<AgentInner>,
 }
 
 impl LocalRemoteMR for Remote {
@@ -218,14 +218,14 @@ impl Drop for Remote {
     fn drop(&mut self) {
         let agent = self.agent.clone();
         let token = self.token;
-        tokio::spawn(async move { Agent::release_mr(&agent, token).await });
+        tokio::spawn(async move { AgentInner::release_mr(&agent, token).await });
     }
 }
 
 pub type RemoteMemoryRegion = MemoryRegion<Remote>;
 
 impl RemoteMemoryRegion {
-    pub fn new_from_token(token: MemoryRegionToken, agent: Arc<Agent>) -> Self {
+    pub fn new_from_token(token: MemoryRegionToken, agent: Arc<AgentInner>) -> Self {
         let addr = token.addr;
         let len = token.len;
         let remote = Remote { token, agent };
