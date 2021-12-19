@@ -1,4 +1,4 @@
-use crate::{LocalMemoryRegion, ProtectionDomain};
+use crate::{memory_region::LocalMemoryRegion, protection_domain::ProtectionDomain};
 use rdma_sys::ibv_access_flags;
 use std::{alloc::Layout, io, sync::Arc};
 

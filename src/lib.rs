@@ -11,14 +11,13 @@ mod protection_domain;
 mod queue_pair;
 mod work_request;
 
-use agent::*;
-use completion_queue::*;
-use context::*;
+use agent::Agent;
+use context::Context;
 use event_listener::EventListener;
-pub use memory_region::*;
+use memory_region::{LocalMemoryRegion, RemoteMemoryRegion};
 use mr_allocator::MRAllocator;
-use protection_domain::*;
-use queue_pair::*;
+use protection_domain::ProtectionDomain;
+use queue_pair::{QueuePair, QueuePairEndpoint};
 use rdma_sys::ibv_access_flags;
 use std::{alloc::Layout, any::Any, io, sync::Arc};
 use tokio::{

@@ -1,6 +1,8 @@
+use crate::{
+    completion_queue::WorkRequestId,
+    memory_region::{LocalMemoryRegion, RemoteMemoryRegion},
+};
 use rdma_sys::{ibv_recv_wr, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_opcode};
-
-use crate::{completion_queue::WorkRequestId, LocalMemoryRegion, RemoteMemoryRegion};
 
 #[repr(C)]
 pub struct SendWr {

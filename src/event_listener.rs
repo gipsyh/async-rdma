@@ -1,4 +1,4 @@
-use crate::{CompletionQueue, WorkCompletion, WorkRequestId};
+use crate::completion_queue::{CompletionQueue, WorkCompletion, WorkRequestId};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
 use std::sync::Arc;
 use tokio::sync::mpsc;

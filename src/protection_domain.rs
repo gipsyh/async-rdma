@@ -1,4 +1,4 @@
-use crate::{Context, LocalMemoryRegion, QueuePairBuilder};
+use crate::{context::Context, memory_region::LocalMemoryRegion, queue_pair::QueuePairBuilder};
 use rdma_sys::{ibv_access_flags, ibv_alloc_pd, ibv_dealloc_pd, ibv_pd};
 use std::{alloc::Layout, io, ptr::NonNull, sync::Arc};
 

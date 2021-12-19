@@ -1,5 +1,7 @@
 use crate::{
-    mr_allocator::MRAllocator, LocalMemoryRegion, MemoryRegionToken, QueuePair, RemoteMemoryRegion,
+    memory_region::{LocalMemoryRegion, MemoryRegionToken, RemoteMemoryRegion},
+    mr_allocator::MRAllocator,
+    queue_pair::QueuePair,
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,3 @@
-use crate::{AgentInner, ProtectionDomain};
 use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,6 +9,8 @@ use std::{
     slice,
     sync::{Arc, Mutex, MutexGuard},
 };
+
+use crate::{agent::AgentInner, protection_domain::ProtectionDomain};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct MemoryRegionToken {
