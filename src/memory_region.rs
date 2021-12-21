@@ -1,3 +1,4 @@
+use crate::{agent::AgentInner, protection_domain::ProtectionDomain};
 use rdma_sys::{ibv_access_flags, ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,7 +11,50 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use crate::{agent::AgentInner, protection_domain::ProtectionDomain};
+#[derive(Debug)]
+pub struct MemoryRegion<T: LocalRemoteMR> {
+    inner: Arc<InnerMr<T>>,
+}
+
+impl<T: LocalRemoteMR> MemoryRegion<T> {
+    fn new_root(addr: usize, len: usize, t: T) -> Self {
+        Self {
+            inner: Arc::new(InnerMr::new_root(addr, len, t)),
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        self.inner.as_ptr()
+    }
+
+    pub fn length(&self) -> usize {
+        self.inner.length()
+    }
+
+    pub fn rkey(&self) -> u32 {
+        self.inner.rkey()
+    }
+
+    pub fn token(&self) -> MemoryRegionToken {
+        MemoryRegionToken {
+            addr: self.inner.addr,
+            len: self.inner.len,
+            rkey: self.rkey(),
+        }
+    }
+
+    pub fn slice(&self, range: Range<usize>) -> io::Result<Self> {
+        Ok(Self {
+            inner: Arc::new(self.inner.slice(range)?),
+        })
+    }
+
+    pub fn alloc(&self, layout: Layout) -> io::Result<Self> {
+        Ok(Self {
+            inner: Arc::new(self.inner.alloc(layout)?),
+        })
+    }
+}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct MemoryRegionToken {
@@ -24,8 +68,8 @@ pub trait LocalRemoteMR {
 }
 #[derive(Debug)]
 struct Node<T: LocalRemoteMR> {
-    fa: Arc<MemoryRegion<T>>,
-    root: Arc<MemoryRegion<T>>,
+    fa: Arc<InnerMr<T>>,
+    root: Arc<InnerMr<T>>,
 }
 
 #[derive(Debug)]
@@ -44,14 +88,26 @@ impl<T: LocalRemoteMR> MemoryRegionKind<T> {
 }
 
 #[derive(Debug)]
-pub struct MemoryRegion<T: LocalRemoteMR> {
+pub struct InnerMr<T: LocalRemoteMR> {
     addr: usize,
     len: usize,
     kind: MemoryRegionKind<T>,
     sub: SubMemoryRegion,
 }
 
-impl<T: LocalRemoteMR> MemoryRegion<T> {
+impl<T: LocalRemoteMR> InnerMr<T> {
+    fn as_ptr(&self) -> *const u8 {
+        self.addr as _
+    }
+
+    fn length(&self) -> usize {
+        self.len
+    }
+
+    fn rkey(&self) -> u32 {
+        self.kind.rkey()
+    }
+
     fn new_root(addr: usize, len: usize, t: T) -> Self {
         Self {
             addr,
@@ -75,26 +131,6 @@ impl<T: LocalRemoteMR> MemoryRegion<T> {
         }
     }
 
-    pub fn as_ptr(&self) -> *const u8 {
-        self.addr as _
-    }
-
-    pub fn length(&self) -> usize {
-        self.len
-    }
-
-    pub fn rkey(&self) -> u32 {
-        self.kind.rkey()
-    }
-
-    pub fn token(&self) -> MemoryRegionToken {
-        MemoryRegionToken {
-            addr: self.addr,
-            len: self.len,
-            rkey: self.rkey(),
-        }
-    }
-
     fn root(self: &Arc<Self>) -> Arc<Self> {
         match &self.kind {
             MemoryRegionKind::Root(_) => self.clone(),
@@ -102,18 +138,18 @@ impl<T: LocalRemoteMR> MemoryRegion<T> {
         }
     }
 
-    pub fn slice(self: &Arc<Self>, range: Range<usize>) -> io::Result<Self> {
+    fn slice(self: &Arc<Self>, range: Range<usize>) -> io::Result<Self> {
         self.sub.slice(&range)?;
         Ok(self.new_node(self.addr + range.start, range.len()))
     }
 
-    pub fn alloc(self: &Arc<Self>, layout: Layout) -> io::Result<Self> {
+    fn alloc(self: &Arc<Self>, layout: Layout) -> io::Result<Self> {
         let range = self.sub.alloc(layout)?;
         Ok(self.new_node(self.addr + range.start, range.len()))
     }
 }
 
-impl<T: LocalRemoteMR> Drop for MemoryRegion<T> {
+impl<T: LocalRemoteMR> Drop for InnerMr<T> {
     fn drop(&mut self) {
         if let MemoryRegionKind::Node(node) = &self.kind {
             node.fa
@@ -161,6 +197,15 @@ unsafe impl Sync for Local {}
 
 unsafe impl Send for Local {}
 
+impl InnerMr<Local> {
+    fn lkey(&self) -> u32 {
+        match &self.kind {
+            MemoryRegionKind::Root(root) => root.lkey(),
+            MemoryRegionKind::Node(node) => node.root.lkey(),
+        }
+    }
+}
+
 pub type LocalMemoryRegion = MemoryRegion<Local>;
 
 impl LocalMemoryRegion {
@@ -177,10 +222,7 @@ impl LocalMemoryRegion {
     }
 
     pub fn lkey(&self) -> u32 {
-        match &self.kind {
-            MemoryRegionKind::Root(root) => root.lkey(),
-            MemoryRegionKind::Node(node) => node.fa.lkey(),
-        }
+        self.inner.lkey()
     }
 
     pub fn new_from_pd(
@@ -230,13 +272,8 @@ impl RemoteMemoryRegion {
         let addr = token.addr;
         let len = token.len;
         let remote = Remote { token, agent };
-        let sub = SubMemoryRegion::new(len);
-        Self {
-            addr,
-            len,
-            kind: MemoryRegionKind::Root(remote),
-            sub,
-        }
+        let inner = Arc::new(InnerMr::new_root(addr, len, remote));
+        Self { inner }
     }
 }
 #[derive(Debug)]
