@@ -24,6 +24,7 @@ use tracing::debug;
 pub struct Agent {
     inner: Arc<AgentInner>,
     mr_recv: Mutex<Receiver<io::Result<Arc<dyn Any + Send + Sync>>>>,
+    data_recv: Mutex<Receiver<LocalMemoryRegion>>,
     _handle: JoinHandle<io::Result<()>>,
 }
 
@@ -32,17 +33,20 @@ impl Agent {
         let response_waits = Arc::new(Mutex::new(HashMap::new()));
         let mr_own = Arc::new(Mutex::new(HashMap::new()));
         let (mr_send, mr_recv) = channel(1024);
+        let (data_send, data_recv) = channel(1024);
         let mr_recv = Mutex::new(mr_recv);
+        let data_recv = Mutex::new(data_recv);
         let inner = Arc::new(AgentInner {
             qp,
             response_waits,
             mr_own,
             allocator,
         });
-        let _handle = AgentThread::run(inner.clone(), mr_send);
+        let _handle = AgentThread::run(inner.clone(), mr_send, data_send);
         Self {
             inner,
             mr_recv,
+            data_recv,
             _handle,
         }
     }
@@ -77,34 +81,62 @@ impl Agent {
         self.mr_recv.lock().await.recv().await.unwrap()
     }
 
-    pub async fn post_send(&self, _lm: &LocalMemoryRegion) -> io::Result<()> {
-        todo!()
+    pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
+        let mut start = 0;
+        let lm_len = lm.length();
+        while start < lm_len {
+            let end = (start + *SEND_RECV_MAX_LEN).min(lm_len);
+            let request = Request {
+                request_id: RequestId::new(),
+                kind: RequestKind::SendData(SendDataRequest { len: end - start }),
+            };
+            let response = self
+                .inner
+                .send_request_append_data(request, vec![&lm.slice(start..end).unwrap()])
+                .await
+                .unwrap();
+            if let ResponseKind::SendData(response) = response {
+                if response.status > 0 {
+                    todo!()
+                }
+            } else {
+                panic!();
+            }
+            start = end;
+        }
+        Ok(())
     }
 
-    pub async fn post_receive(&self, _lm: &LocalMemoryRegion) -> io::Result<usize> {
-        todo!()
+    pub async fn receive(&self) -> LocalMemoryRegion {
+        self.data_recv.lock().await.recv().await.unwrap()
     }
 }
 
 struct AgentThread {
     inner: Arc<AgentInner>,
     mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
+    data_send: Sender<LocalMemoryRegion>,
 }
 
 impl AgentThread {
     fn run(
         inner: Arc<AgentInner>,
         mr_send: Sender<io::Result<Arc<dyn Any + Send + Sync>>>,
+        data_send: Sender<LocalMemoryRegion>,
     ) -> JoinHandle<io::Result<()>> {
-        let agent = Arc::new(Self { inner, mr_send });
+        let agent = Arc::new(Self {
+            inner,
+            mr_send,
+            data_send,
+        });
         tokio::spawn(agent.main())
     }
 
     async fn main(self: Arc<Self>) -> io::Result<()> {
-        let buf = self
+        let mut buf = self
             .inner
             .allocator
-            .alloc(Layout::new::<[u8; BUF_SIZE]>())
+            .alloc(Layout::new::<[u8; MESSAGE_MAX_SIZE]>())
             .unwrap();
         loop {
             debug!("receiving message");
@@ -112,13 +144,23 @@ impl AgentThread {
             debug!("received message, size = {}", sz);
             let message = bincode::deserialize(&buf.as_slice()[0..sz]).unwrap();
             match message {
-                Message::Request(request) => {
-                    tokio::spawn(self.clone().handle_request(request));
-                }
+                Message::Request(request) => match &request.kind {
+                    RequestKind::SendData(_) => {
+                        tokio::spawn(self.clone().handle_send(request, buf));
+                        buf = self
+                            .inner
+                            .allocator
+                            .alloc(Layout::new::<[u8; MESSAGE_MAX_SIZE]>())
+                            .unwrap();
+                    }
+                    _ => {
+                        tokio::spawn(self.clone().handle_request(request));
+                    }
+                },
                 Message::Response(response) => {
                     tokio::spawn(self.clone().handle_response(response));
                 }
-            }
+            };
         }
     }
 
@@ -166,22 +208,14 @@ impl AgentThread {
                 }
                 ResponseKind::SendMR(SendMRResponse {})
             }
-            RequestKind::ReceiveMR => todo!(),
-            RequestKind::SendData => todo!(),
             RequestKind::ReceiveData => todo!(),
+            _ => panic!(),
         };
         let response = Response {
             request_id: request.request_id,
             kind: response,
         };
-        let mut buf = self
-            .inner
-            .allocator
-            .alloc(Layout::new::<[u8; BUF_SIZE]>())
-            .unwrap();
-        let cursor = Cursor::new(buf.as_mut_slice());
-        bincode::serialize_into(cursor, &Message::Response(response)).unwrap();
-        self.inner.qp.send(&buf).await.unwrap();
+        self.inner.send_response(response).await;
         debug!("handle request done");
     }
 
@@ -197,6 +231,22 @@ impl AgentThread {
         match sender.send(Ok(response.kind)) {
             Ok(_) => (),
             Err(_) => todo!(),
+        }
+    }
+
+    async fn handle_send(self: Arc<Self>, request: Request, buf: LocalMemoryRegion) {
+        if let RequestKind::SendData(param) = request.kind {
+            let buf = buf
+                .slice(*SEND_DATA_OFFSET..*SEND_DATA_OFFSET + param.len)
+                .unwrap();
+            self.data_send.send(buf).await.unwrap();
+            let response = Response {
+                request_id: request.request_id,
+                kind: ResponseKind::SendData(SendDataResponse { status: 0 }),
+            };
+            self.inner.send_response(response).await
+        } else {
+            panic!()
         }
     }
 }
@@ -239,6 +289,14 @@ impl AgentInner {
     }
 
     async fn send_request(&self, request: Request) -> io::Result<ResponseKind> {
+        self.send_request_append_data(request, vec![]).await
+    }
+
+    async fn send_request_append_data(
+        &self,
+        request: Request,
+        lm: Vec<&LocalMemoryRegion>,
+    ) -> io::Result<ResponseKind> {
         let (send, recv) = oneshot::channel();
         self.response_waits
             .lock()
@@ -247,13 +305,40 @@ impl AgentInner {
         let mut buf = self.allocator.alloc(Layout::new::<[u8; 512]>()).unwrap();
         let cursor = Cursor::new(buf.as_mut_slice());
         bincode::serialize_into(cursor, &Message::Request(request)).unwrap();
-        self.qp.send(&buf).await.unwrap();
+        let mut lms = vec![&buf];
+        lms.extend(lm);
+        let lms_len: usize = lms.iter().map(|lm| lm.length()).sum();
+        assert!(lms_len <= MESSAGE_MAX_SIZE);
+        self.qp.send_sge(lms).await.unwrap();
         let ans = recv.await.unwrap();
         ans
     }
+
+    async fn send_response(&self, response: Response) {
+        let mut buf = self
+            .allocator
+            .alloc(Layout::new::<[u8; MESSAGE_MAX_SIZE]>())
+            .unwrap();
+        let cursor = Cursor::new(buf.as_mut_slice());
+        bincode::serialize_into(cursor, &Message::Response(response)).unwrap();
+        self.qp.send(&buf).await.unwrap();
+    }
 }
 
-const BUF_SIZE: usize = 512;
+const MESSAGE_MAX_SIZE: usize = 4096;
+
+lazy_static! {
+    static ref SEND_DATA_OFFSET: usize = {
+        let request = Request {
+            request_id: RequestId::new(),
+            kind: RequestKind::SendData(SendDataRequest { len: 0 }),
+        };
+        let message = Message::Request(request);
+        let ans = bincode::serialize(&message).unwrap();
+        ans.len()
+    };
+    static ref SEND_RECV_MAX_LEN: usize = MESSAGE_MAX_SIZE - *SEND_DATA_OFFSET;
+}
 
 type ResponseWaitsMap = HashMap<RequestId, oneshot::Sender<io::Result<ResponseKind>>>;
 
@@ -308,12 +393,22 @@ struct ReceiveMRRequest {}
 struct ReceiveMRResponse {}
 
 #[derive(Serialize, Deserialize)]
+struct SendDataRequest {
+    len: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SendDataResponse {
+    status: usize,
+}
+
+#[derive(Serialize, Deserialize)]
 enum RequestKind {
     AllocMR(AllocMRRequest),
     ReleaseMR(ReleaseMRRequest),
     SendMR(SendMRRequest),
     ReceiveMR,
-    SendData,
+    SendData(SendDataRequest),
     ReceiveData,
 }
 
@@ -329,7 +424,7 @@ enum ResponseKind {
     ReleaseMR(ReleaseMRResponse),
     SendMR(SendMRResponse),
     ReceiveMR,
-    SendData,
+    SendData(SendDataResponse),
     ReceiveData,
 }
 

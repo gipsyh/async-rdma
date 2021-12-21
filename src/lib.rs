@@ -26,6 +26,9 @@ use tokio::{
 };
 use tracing::debug;
 
+#[macro_use]
+extern crate lazy_static;
+
 pub struct RdmaBuilder {
     dev_name: Option<String>,
     access: ibv_access_flags,
@@ -104,18 +107,11 @@ impl Rdma {
     }
 
     pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
-        self.agent.as_ref().unwrap().post_send(lm).await
-        // let res = self.qp.send(lm).await;
-        // match res {
-        //     Err(WCError::RnrRetryExc) => {
-        //         panic!();
-        //     }
-        //     _ => res.map_err(|e| e.into()),
-        // }
+        self.agent.as_ref().unwrap().send(lm).await
     }
 
-    pub async fn receive(&self, lm: &LocalMemoryRegion) -> io::Result<usize> {
-        self.agent.as_ref().unwrap().post_receive(lm).await
+    pub async fn receive(&self) -> LocalMemoryRegion {
+        self.agent.as_ref().unwrap().receive().await
     }
 
     pub async fn read(

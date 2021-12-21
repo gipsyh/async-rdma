@@ -73,9 +73,8 @@ mod test2 {
         for _ in 0..10 {
             let rdma_clone = rdma.clone();
             handles.push(tokio::spawn(async move {
-                let lm = rdma_clone.alloc_local_mr(Layout::new::<i32>()).unwrap();
-                let sz = rdma_clone.receive(&lm).await.unwrap();
-                assert_eq!(sz, 4);
+                let lm = rdma_clone.receive().await;
+                assert_eq!(lm.length(), 4);
             }));
         }
         for handle in handles {
