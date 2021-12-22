@@ -302,9 +302,15 @@ impl AgentInner {
             .lock()
             .await
             .insert(request.request_id, send);
-        let mut buf = self.allocator.alloc(Layout::new::<[u8; 512]>()).unwrap();
+        let mut buf = self
+            .allocator
+            .alloc(Layout::new::<[u8; MESSAGE_MAX_SIZE]>())
+            .unwrap();
         let cursor = Cursor::new(buf.as_mut_slice());
-        bincode::serialize_into(cursor, &Message::Request(request)).unwrap();
+        let message = Message::Request(request);
+        let msz = bincode::serialized_size(&message).unwrap() as usize;
+        bincode::serialize_into(cursor, &message).unwrap();
+        let buf = buf.slice(0..msz).unwrap();
         let mut lms = vec![&buf];
         lms.extend(lm);
         let lms_len: usize = lms.iter().map(|lm| lm.length()).sum();
@@ -320,7 +326,10 @@ impl AgentInner {
             .alloc(Layout::new::<[u8; MESSAGE_MAX_SIZE]>())
             .unwrap();
         let cursor = Cursor::new(buf.as_mut_slice());
-        bincode::serialize_into(cursor, &Message::Response(response)).unwrap();
+        let message = Message::Response(response);
+        let msz = bincode::serialized_size(&message).unwrap() as usize;
+        bincode::serialize_into(cursor, &message).unwrap();
+        let buf = buf.slice(0..msz).unwrap();
         self.qp.send(&buf).await.unwrap();
     }
 }

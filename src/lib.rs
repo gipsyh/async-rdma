@@ -19,7 +19,7 @@ use mr_allocator::MRAllocator;
 use protection_domain::ProtectionDomain;
 use queue_pair::{QueuePair, QueuePairEndpoint};
 use rdma_sys::ibv_access_flags;
-use std::{alloc::Layout, any::Any, io, sync::Arc};
+use std::{alloc::Layout, any::Any, fmt::Debug, io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
@@ -68,7 +68,7 @@ pub struct Rdma {
     pd: Arc<ProtectionDomain>,
     allocator: Arc<MRAllocator>,
     qp: Arc<QueuePair>,
-    agent: Option<Agent>,
+    agent: Option<Arc<Agent>>,
 }
 
 impl Rdma {
@@ -107,11 +107,11 @@ impl Rdma {
     }
 
     pub async fn send(&self, lm: &LocalMemoryRegion) -> io::Result<()> {
-        self.agent.as_ref().unwrap().send(lm).await
+        self.agent.as_ref().unwrap().clone().send(lm).await
     }
 
     pub async fn receive(&self) -> LocalMemoryRegion {
-        self.agent.as_ref().unwrap().receive().await
+        self.agent.as_ref().unwrap().clone().receive().await
     }
 
     pub async fn read(
@@ -138,7 +138,8 @@ impl Rdma {
         stream.read_exact(endpoint.as_mut()).await?;
         let remote: QueuePairEndpoint = bincode::deserialize(&endpoint).unwrap();
         rdma.handshake(remote)?;
-        rdma.agent = Some(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
+        let agent = Arc::new(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
+        rdma.agent = Some(agent);
         Ok(rdma)
     }
 
@@ -179,6 +180,7 @@ impl Rdma {
     }
 }
 
+#[derive(Debug)]
 pub struct RdmaListener {
     tcp_listener: TcpListener,
 }
@@ -199,7 +201,8 @@ impl RdmaListener {
         stream.write_all(&local).await?;
         rdma.handshake(remote)?;
         debug!("handshake done");
-        rdma.agent = Some(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
+        let agent = Arc::new(Agent::new(rdma.qp.clone(), rdma.allocator.clone()));
+        rdma.agent = Some(agent);
         Ok(rdma)
     }
 }

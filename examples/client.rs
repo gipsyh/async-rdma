@@ -1,5 +1,5 @@
 use async_rdma::Rdma;
-use std::{alloc::Layout, sync::Arc, time::Duration};
+use std::{alloc::Layout, sync::Arc};
 use tracing::debug;
 
 async fn example1(rdma: &Rdma) {
@@ -36,6 +36,6 @@ async fn main() {
     example3(&rdma).await;
     println!("client done");
     loop {
-        tokio::time::sleep(Duration::new(100, 0)).await;
+        tokio::task::yield_now().await;
     }
 }

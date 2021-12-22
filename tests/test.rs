@@ -44,7 +44,7 @@ mod test1 {
 
     async fn server(rdma: Rdma) -> io::Result<()> {
         let mr = rdma.receive_local_mr().await.unwrap();
-        dbg!(unsafe { *(mr.as_ptr() as *mut i32) });
+        assert_eq!(unsafe { *(mr.as_ptr() as *mut i32) }, 5);
         Ok(())
     }
 
@@ -74,6 +74,7 @@ mod test2 {
             let rdma_clone = rdma.clone();
             handles.push(tokio::spawn(async move {
                 let lm = rdma_clone.receive().await;
+                assert_eq!(unsafe { *(lm.as_ptr() as *mut i32) }, 5);
                 assert_eq!(lm.length(), 4);
             }));
         }
@@ -90,6 +91,7 @@ mod test2 {
             let rdma_clone = rdma.clone();
             handles.push(tokio::spawn(async move {
                 let lm = rdma_clone.alloc_local_mr(Layout::new::<i32>()).unwrap();
+                unsafe { *(lm.as_ptr() as *mut i32) = 5 };
                 rdma_clone.send(&lm).await.unwrap();
             }));
         }
