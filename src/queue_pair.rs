@@ -1,11 +1,12 @@
 use crate::{
-    completion_queue::{WCError, WorkRequestId},
+    completion_queue::{WCError, WorkCompletion, WorkRequestId},
     event_listener::EventListener,
     gid::Gid,
     memory_region::{LocalMemoryRegion, RemoteMemoryRegion},
     protection_domain::ProtectionDomain,
     work_request::{RecvWr, SendWr},
 };
+use futures::{ready, Future};
 use rdma_sys::{
     ibv_access_flags, ibv_cq, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_init_attr, ibv_qp_state, ibv_recv_wr, ibv_send_wr,
@@ -14,9 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::Debug,
     io,
+    pin::Pin,
     ptr::{self, NonNull},
     sync::Arc,
+    task::Poll,
 };
+use tokio::sync::mpsc;
 use tracing::debug;
 
 struct QueuePairInitAttr {
@@ -268,23 +272,14 @@ impl QueuePair {
         Ok(())
     }
 
-    pub async fn send_sge(&self, lms: Vec<&LocalMemoryRegion>) -> Result<(), WCError> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        let len: usize = lms.iter().map(|lm| lm.length()).sum();
-        self.submit_send(lms, wr_id).unwrap();
-        resp_rx
-            .recv()
-            .await
-            .unwrap()
-            .err()
-            .map(|sz| assert_eq!(sz, len))
+    pub fn send_sge(self: &Arc<Self>, lms: Vec<&LocalMemoryRegion>) -> QueuePairOps<QPSend> {
+        let send = QPSend::new(lms);
+        QueuePairOps::new(self.clone(), send)
     }
 
-    pub async fn receive_sge(&self, lms: Vec<&LocalMemoryRegion>) -> Result<usize, WCError> {
-        let (wr_id, mut resp_rx) = self.event_listener.register();
-        self.submit_receive(lms, wr_id).unwrap();
-        let wc = resp_rx.recv().await.unwrap();
-        wc.err()
+    pub fn receive_sge(self: &Arc<Self>, lms: Vec<&LocalMemoryRegion>) -> QueuePairOps<QPRecv> {
+        let recv = QPRecv::new(lms);
+        QueuePairOps::new(self.clone(), recv)
     }
 
     pub async fn read_sge(
@@ -319,12 +314,12 @@ impl QueuePair {
             .map(|sz| assert_eq!(sz, len))
     }
 
-    pub async fn send(&self, lm: &LocalMemoryRegion) -> Result<(), WCError> {
-        self.send_sge(vec![lm]).await
+    pub fn send(self: &Arc<Self>, lm: &LocalMemoryRegion) -> QueuePairOps<QPSend> {
+        self.send_sge(vec![lm])
     }
 
-    pub async fn receive(&self, lm: &LocalMemoryRegion) -> Result<usize, WCError> {
-        self.receive_sge(vec![lm]).await
+    pub fn receive(self: &Arc<Self>, lm: &LocalMemoryRegion) -> QueuePairOps<QPRecv> {
+        self.receive_sge(vec![lm])
     }
 
     pub async fn read(
@@ -352,5 +347,102 @@ impl Drop for QueuePair {
     fn drop(&mut self) {
         let errno = unsafe { ibv_destroy_qp(self.as_ptr()) };
         assert_eq!(errno, 0);
+    }
+}
+
+pub trait QueuePairOp {
+    type Output;
+
+    fn submit(&self, qp: &QueuePair, wr_id: WorkRequestId) -> io::Result<()>;
+
+    fn parse_wc(&self, wc: WorkCompletion) -> Self::Output;
+}
+
+pub struct QPSend<'lm> {
+    lms: Vec<&'lm LocalMemoryRegion>,
+    len: usize,
+}
+
+impl<'lm> QPSend<'lm> {
+    fn new(lms: Vec<&'lm LocalMemoryRegion>) -> Self {
+        Self {
+            len: lms.iter().map(|lm| lm.length()).sum(),
+            lms,
+        }
+    }
+}
+
+impl<'lm> QueuePairOp for QPSend<'lm> {
+    type Output = Result<(), WCError>;
+
+    fn submit(&self, qp: &QueuePair, wr_id: WorkRequestId) -> io::Result<()> {
+        qp.submit_send(self.lms.to_owned(), wr_id)
+    }
+
+    fn parse_wc(&self, wc: WorkCompletion) -> Self::Output {
+        wc.err().map(|sz| assert_eq!(sz, self.len))
+    }
+}
+
+pub struct QPRecv<'lm> {
+    lms: Vec<&'lm LocalMemoryRegion>,
+}
+
+impl<'lm> QPRecv<'lm> {
+    fn new(lms: Vec<&'lm LocalMemoryRegion>) -> Self {
+        Self { lms }
+    }
+}
+
+impl<'lm> QueuePairOp for QPRecv<'lm> {
+    type Output = Result<usize, WCError>;
+
+    fn submit(&self, qp: &QueuePair, wr_id: WorkRequestId) -> io::Result<()> {
+        qp.submit_receive(self.lms.to_owned(), wr_id)
+    }
+
+    fn parse_wc(&self, wc: WorkCompletion) -> Self::Output {
+        wc.err()
+    }
+}
+
+enum QueuePairOpsState {
+    Init,
+    Submitted(mpsc::Receiver<WorkCompletion>),
+}
+
+pub struct QueuePairOps<Op: QueuePairOp + Unpin> {
+    qp: Arc<QueuePair>,
+    state: QueuePairOpsState,
+    op: Op,
+}
+
+impl<Op: QueuePairOp + Unpin> QueuePairOps<Op> {
+    fn new(qp: Arc<QueuePair>, op: Op) -> Self {
+        Self {
+            qp,
+            state: QueuePairOpsState::Init,
+            op,
+        }
+    }
+}
+
+impl<Op: QueuePairOp + Unpin> Future for QueuePairOps<Op> {
+    type Output = Op::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let s = self.get_mut();
+        match &mut s.state {
+            QueuePairOpsState::Init => {
+                let (wr_id, recv) = s.qp.event_listener.register();
+                s.op.submit(&s.qp, wr_id).unwrap();
+                s.state = QueuePairOpsState::Submitted(recv);
+                Pin::new(s).poll(cx)
+            }
+            QueuePairOpsState::Submitted(recv) => {
+                let wc = ready!(recv.poll_recv(cx)).unwrap();
+                Poll::Ready(s.op.parse_wc(wc))
+            }
+        }
     }
 }
